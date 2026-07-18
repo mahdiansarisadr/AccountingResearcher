@@ -80,12 +80,14 @@ answers are trustworthy and verifiable. Speed and breadth are secondary to corre
 
 **IN scope (MVP):**
 - Chat-based, natural-language Q&A over a single firm's data corpus.
-- Ingesting structured tables (Excel), PDFs, and images (with OCR) into a searchable store.
+- Assumes structured data is **already loaded** in the store (see Section 7 assumption).
 - Uploading new PDF invoices / images — both extracted into the dataset and answerable immediately.
 - Cited, traceable **text** answers.
 - **Read-only** behavior: the agent answers questions; it never edits or writes back to the data.
 
 **OUT of scope (MVP / deferred):**
+- **Bulk ingestion pipeline** for the existing corpus (Excel/PDF/image files) — assumed pre-loaded
+  for the MVP.
 - Charts and visualizations.
 - Multi-firm (multi-tenant) support and per-user / per-client data permissions.
 - Any write/edit/modify operations on the data (read-only only).
@@ -122,10 +124,15 @@ The agent must answer questions over a **mixed, growing corpus** of financial da
 
 **Volume & characteristics:**
 - On the order of **thousands of tables**, each potentially **hundreds of rows and/or columns**.
-- Data is **dropped in over time** — the corpus grows continuously; ingestion must be incremental.
+- Data is **dropped in over time** — the corpus grows continuously.
 - (Implication: the dataset is far too large to fit in a model's context window, so the system
-  will rely on ingestion into a queryable store + retrieval, not stuffing raw files into prompts.
+  relies on a queryable structured store + retrieval, not stuffing raw files into prompts.
   Detailed approach in Section 8.)
+
+**MVP assumption:** The existing corpus is **assumed to be already loaded** into the structured
+store (with provenance). Building the **bulk ingestion pipeline** for existing Excel/PDF/image
+files is **out of scope for the MVP** (deferred). The only ingestion the MVP performs is for user
+**uploads** (below).
 
 **Handling uploads (PDF invoices / images):** Both behaviors are required —
 1. **Extract & persist:** parse the document (OCR for images/PDFs), structure the extracted data,
@@ -146,8 +153,21 @@ The agent must answer questions over a **mixed, growing corpus** of financial da
 
 ### Core stack
 - **Language:** Python.
-- **Agent framework:** LangChain (latest version — follow current LangChain docs; specific
-  patterns such as agent type, tool definitions, and SQL/retrieval chains to be detailed later).
+- **Agent framework:** LangChain (latest version), using the current **`create_agent`** harness —
+  see https://docs.langchain.com/oss/python/langchain/agents. Build against this modern API, not
+  legacy chain/agent patterns. Relevant primitives we intend to use:
+  - **`create_agent(model=, tools=, system_prompt=)`** — the model-calls-tools-in-a-loop harness.
+  - **Tools** (`@tool`) — e.g., a SQL query tool over the structured store, and a retrieval tool.
+  - **Structured output** (`response_format=` Pydantic) — to return the answer plus an explicit
+    **confidence** field and citation metadata.
+  - **Streaming** (`stream_events`) — surface progress/tokens for better perceived latency (≤10s).
+  - **Checkpointer + `thread_id`** — persist multi-turn chat history per conversation.
+  - **Middleware** — for guardrails and reliability: `PIIMiddleware` (content controls),
+    `ModelRetryMiddleware` / `ToolRetryMiddleware` (fault tolerance), and
+    `HumanInTheLoopMiddleware` (available if any step later needs approval).
+  - **LangSmith** — tracing + evaluation of agent runs (ties into Section 10).
+  - _Detailed patterns (exact tool schemas, SQL/retrieval design) to be finalized against the
+    latest LangChain docs._
 - **Model requirements (capabilities, not fixed model names):**
   - Strong reasoning + reliable **tool/function calling** (to drive query generation).
   - **Multimodal / vision** capability or a paired OCR step for images and scanned PDFs.
@@ -158,16 +178,17 @@ The agent must answer questions over a **mixed, growing corpus** of financial da
 The dataset is far too large for prompts, and the #1 goal is accuracy — so the design favors
 **structured querying over document RAG** for anything quantitative:
 
-1. **Ingestion pipeline (incremental):**
-   - Structured tables (Excel) → loaded into a **structured store (SQL database)**.
-   - PDFs / images → **OCR + extraction** into structured records, then loaded into the same store.
-   - Each record retains **provenance** (source file, sheet/page, row) to power citations.
-2. **Query layer (text-to-SQL / tool-driven):** The agent translates natural-language questions
+0. **Assumption (MVP):** The existing corpus is **already loaded into the structured store**
+   (SQL database) with provenance metadata. Building the bulk ingestion pipeline for existing
+   Excel files is **out of scope for the MVP** (deferred). The only ingestion the MVP performs is
+   for user **uploads** (Section 7 / Phase 2). Each record retains **provenance** (source file,
+   sheet/page, row) to power citations.
+1. **Query layer (text-to-SQL / tool-driven):** The agent translates natural-language questions
    into **queries against the structured store**, so aggregations and trends are computed exactly
    (not estimated by the LLM). This is both more accurate and naturally traceable.
-3. **Semantic/RAG layer (supporting):** Optional retrieval for unstructured/qualitative lookups
+2. **Semantic/RAG layer (supporting):** Optional retrieval for unstructured/qualitative lookups
    and for mapping vague questions to the right tables/columns.
-4. **Traceability:** Answers include the query result rows and their source provenance so the
+3. **Traceability:** Answers include the query result rows and their source provenance so the
    auditor can verify.
 
 _Rationale:_ Pure RAG over document chunks is unreliable for math/aggregation; computing answers
@@ -245,44 +266,43 @@ online operational metrics per Section 10.)
 Sequential phases for the single-firm MVP. Each has bounded scope and a testable output.
 _(Proposed — pending review.)_
 
-### Phase 1 — Structured data ingestion
-- **Dependencies:** None.
-- **Scope:** Ingest Excel/table-like files into a **SQL store** with **provenance** metadata
-  (source file, sheet, row) on every record. Incremental ingestion (files added over time).
-- **Out of scope:** PDFs/images, chat UI.
-- **Testable output:** Sample Excel files load into the DB; a manual SQL query returns correct
-  rows with provenance attached.
+> **Pre-req (not a phase):** Structured data is assumed already loaded in the SQL store with
+> provenance (bulk ingestion is deferred — see Sections 5 & 7). Phases start from a populated store.
 
-### Phase 2 — Query agent + chat (text-to-SQL) with citations
-- **Dependencies:** Phase 1.
-- **Scope:** LangChain agent that turns NL questions into SQL against the store, runs them, and
-  returns a **cited text answer** (result + source provenance). Basic chat interface.
+### Phase 1 — Query agent + chat (text-to-SQL) with citations
+- **Dependencies:** Populated structured store (pre-req).
+- **Scope:** LangChain agent (via **`create_agent`**,
+  https://docs.langchain.com/oss/python/langchain/agents) with a **SQL query tool** over the store;
+  turns NL questions into SQL, runs them, and returns a **cited text answer** (result + source
+  provenance) using **structured output** (`response_format`) for the confidence + citations.
+  Basic chat interface with **streaming** and **checkpointer**-backed multi-turn history.
 - **Out of scope:** Uploads, OCR, advanced guardrails.
 - **Testable output:** The 3 core question types (multi-year aggregation, trend, status/exception)
-  return correct, cited answers on seeded data.
+  return correct, cited answers on the seeded store.
 
-### Phase 3 — Document uploads: OCR + extraction
-- **Dependencies:** Phase 1–2.
+### Phase 2 — Document uploads: OCR + extraction
+- **Dependencies:** Phase 1.
 - **Scope:** Upload PDF invoices / images → OCR + extraction into the structured store (with
   provenance + overall confidence). Support **both** persisting to the dataset and answering about
-  the just-uploaded doc immediately.
-- **Out of scope:** Per-field human review.
+  the just-uploaded doc immediately. (This is the only ingestion in the MVP.)
+- **Out of scope:** Per-field human review; bulk ingestion of the existing corpus.
 - **Testable output:** An uploaded invoice is queryable alongside existing data, and its source is
   cited; immediate Q&A about the upload works.
 
-### Phase 4 — Guardrails & confidence behavior
-- **Dependencies:** Phase 2 (and 3 for extraction confidence).
+### Phase 3 — Guardrails & confidence behavior
+- **Dependencies:** Phase 1 (and 2 for extraction confidence).
 - **Scope:** Clarifying questions, reasoned abstention with suggestions, "never fabricate,"
-  overall-confidence signaling, prompt-injection-safe handling of document text.
+  overall-confidence signaling, prompt-injection-safe handling of document text. Use LangChain
+  **middleware** where deterministic enforcement is needed (e.g., retries, content controls).
 - **Out of scope:** —
 - **Testable output:** On ambiguous/missing-data questions the agent asks or abstains (with reason)
   instead of guessing, verified against test cases.
 
-### Phase 5 — Evaluation harness
-- **Dependencies:** Phase 2 (expand as later phases land).
+### Phase 4 — Evaluation harness
+- **Dependencies:** Phase 1 (expand as later phases land).
 - **Scope:** Build the **golden set** (~30–50 verified Q&As) and an automated eval scoring numeric
-  correctness, citation correctness, and appropriate abstention. Add thumbs up/down + cost/latency
-  logging in the chat.
+  correctness, citation correctness, and appropriate abstention (leveraging **LangSmith** tracing/
+  evals). Add thumbs up/down + cost/latency logging in the chat.
 - **Out of scope:** —
 - **Testable output:** `eval` run produces accuracy/citation/abstention scores; chat records
   feedback and cost/latency per answer.
@@ -293,8 +313,10 @@ _(Proposed — pending review.)_
   network in model calls (raw rows vs. only derived/aggregated values)? (Section 8/9)
 - **Cost:** Budget/ceiling per question and per user/month? (Section 11)
 - **Post-launch ownership & maintenance:** Who operates the system after MVP? (Section 11)
-- **LangChain specifics:** Agent type, tool definitions, SQL/retrieval chain patterns — to detail
-  against the latest LangChain docs. (Section 8)
+- **LangChain specifics:** Framework/API decided — latest LangChain **`create_agent`**
+  (https://docs.langchain.com/oss/python/langchain/agents). Still to detail: exact tool schemas
+  (SQL query tool, retrieval tool), `response_format` schema for confidence/citations, and which
+  middleware to enable. (Section 8)
 - **SQL store choice:** Which database for the structured store (on-prem).
 - **OCR/extraction tooling:** Which OCR/vision approach for PDFs and invoice images.
 - **Confidence signal:** How "overall confidence" is computed and displayed. (Section 9)
