@@ -27,7 +27,21 @@ whether that data already exists in the system or is newly uploaded (including P
 and images).
 
 ## 2. Justification for AI (why not deterministic rules)
-_TBD_
+
+The value is in letting non-technical accountants ask **open-ended, varied questions in natural
+language** over a **heterogeneous, messy, growing** data corpus (structured tables + PDFs + images).
+A deterministic/rules-only approach cannot cover this because:
+
+- **Unbounded question space:** Users phrase ad-hoc questions ("trend since 2026", "cases not
+  audited yet", "total travel over 3 years") that can't be pre-enumerated as fixed reports.
+- **Natural-language → query translation:** Mapping free-form questions to the right tables,
+  columns, and filters is exactly where an LLM adds value over hard-coded queries.
+- **Unstructured inputs:** Extracting fields from PDF invoices and images requires
+  OCR + semantic understanding, not fixed parsers, because layouts vary.
+
+Deterministic components are still used where they are more reliable (e.g., the actual
+**numeric computation/aggregation runs as SQL**, not LLM arithmetic). The LLM handles
+understanding and translation; deterministic queries handle exact math.
 
 ## 3. Target Users & Personas
 
@@ -122,10 +136,70 @@ The agent must answer questions over a **mixed, growing corpus** of financial da
 **MVP scope:** Single firm's data corpus.
 
 ## 8. Model & Technical Requirements
-_TBD_
+
+### Deployment & privacy
+- **Model access:** Hosted model APIs (e.g., OpenAI / Anthropic) are permitted.
+- **Deployment:** The application runs **on-prem**. Data storage and application services stay on
+  the firm's own infrastructure; only model calls go out to the hosted API.
+- _Open item:_ confirm what data may be included in outbound model calls (e.g., whether raw rows
+  vs. only derived/aggregated values can be sent) — see Section 9 / Open Questions.
+
+### Core stack
+- **Language:** Python.
+- **Agent framework:** LangChain (latest version — follow current LangChain docs; specific
+  patterns such as agent type, tool definitions, and SQL/retrieval chains to be detailed later).
+- **Model requirements (capabilities, not fixed model names):**
+  - Strong reasoning + reliable **tool/function calling** (to drive query generation).
+  - **Multimodal / vision** capability or a paired OCR step for images and scanned PDFs.
+  - Context window large enough for retrieved rows + citations (models change fast; pin to
+    capability, not a version).
+
+### Architecture direction (proposed)
+The dataset is far too large for prompts, and the #1 goal is accuracy — so the design favors
+**structured querying over document RAG** for anything quantitative:
+
+1. **Ingestion pipeline (incremental):**
+   - Structured tables (Excel) → loaded into a **structured store (SQL database)**.
+   - PDFs / images → **OCR + extraction** into structured records, then loaded into the same store.
+   - Each record retains **provenance** (source file, sheet/page, row) to power citations.
+2. **Query layer (text-to-SQL / tool-driven):** The agent translates natural-language questions
+   into **queries against the structured store**, so aggregations and trends are computed exactly
+   (not estimated by the LLM). This is both more accurate and naturally traceable.
+3. **Semantic/RAG layer (supporting):** Optional retrieval for unstructured/qualitative lookups
+   and for mapping vague questions to the right tables/columns.
+4. **Traceability:** Answers include the query result rows and their source provenance so the
+   auditor can verify.
+
+_Rationale:_ Pure RAG over document chunks is unreliable for math/aggregation; computing answers
+via SQL against structured data directly serves the accuracy and traceability requirements.
 
 ## 9. Guardrails, Safety & Failure Handling
-_TBD_
+
+**Guiding principle:** Never present a confident wrong answer. When unsure, be transparent and
+helpful rather than silent.
+
+### Handling low confidence / ambiguity (situational)
+The response depends on the situation, but in order of preference:
+1. **Ask a clarifying question** when the question is ambiguous or under-specified (preferred —
+   be helpful, not just refuse).
+2. **Abstain with a reason** when it genuinely can't answer confidently: say *"I can't answer that
+   confidently,"* **explain why** (e.g., data not found, conflicting records, ambiguous scope), and
+   where possible **suggest how the user could help it answer** (e.g., "upload the Q3 invoices," or
+   "did you mean the finance team or all departments?").
+3. **Never fabricate** numbers or sources to fill a gap.
+
+### OCR / extraction accuracy (kept simple for MVP)
+- Do **not** block on human review of every extraction.
+- **Cite the source document** for any answer derived from an extracted PDF/image so the user can
+  eyeball the original.
+- Surface an **overall confidence** indication for extraction-derived answers (a simple signal,
+  not per-field review in the MVP).
+
+### Other guardrails
+- **Read-only:** the agent cannot modify data (see Scope), removing a whole class of harmful actions.
+- **Grounding:** quantitative answers must come from actual query results, not model estimation.
+- **Prompt-injection awareness:** treat file/document contents as data, not instructions (esp. for
+  uploaded/OCR'd text). _Detailed handling TBD._
 
 ## 10. Evaluation & Success Metrics (offline + online)
 _TBD_
