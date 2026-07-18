@@ -202,13 +202,100 @@ The response depends on the situation, but in order of preference:
   uploaded/OCR'd text). _Detailed handling TBD._
 
 ## 10. Evaluation & Success Metrics (offline + online)
-_TBD_
+
+Because accuracy is the #1 goal, evaluation is a core deliverable, not an afterthought.
+
+### Golden test set (to be built)
+- No test set exists yet — **building a "golden" set is part of the project.**
+- Target ~**30–50 real questions** paired with **verified correct answers** (and the expected
+  source(s)), covering the main question types: aggregations over time, trends, and status/exception
+  finding.
+- Curated with input from actual accountants/auditors so answers are truly ground-truth.
+
+### Offline (automated) evaluation
+- Run the agent against the golden set on a regular cadence (and before releases).
+- Score:
+  - **Numeric correctness** — computed value matches the expected answer (exact match / within a
+    defined tolerance).
+  - **Citation correctness** — the cited source(s) point to the right file/sheet/row/doc.
+  - **Appropriate abstention** — agent abstains only when it should, and answers when it can.
+
+### Online (human + operational) evaluation
+- **Thumbs up / down** on each answer in the chat, with optional comment.
+- **Human spot-checks** of real answers against sources.
+- Feedback and flagged failures feed back into the golden set and prompt/query improvements.
+- **Operational metrics (tracked live in production):**
+  - **Cost** — model/API cost per question and per user/month.
+  - **Latency** — real-world response time per answer (against the ≤ ~10s target).
+
+### Metrics tracked
+- Answer accuracy (numeric + citation) on the golden set.
+- Correct-abstention rate.
+- Thumbs-up rate in real usage.
+- Latency (≤ ~10s target).
 
 ## 11. Cost, Operations & Lifecycle
-_TBD_
+
+_TBD._ (Cost ceiling/budget per question and per user/month, and post-launch ownership &
+maintenance, are not yet decided — see Open Questions. Note: cost and latency are tracked as
+online operational metrics per Section 10.)
 
 ## 12. Implementation Phases
-_TBD_
+
+Sequential phases for the single-firm MVP. Each has bounded scope and a testable output.
+_(Proposed — pending review.)_
+
+### Phase 1 — Structured data ingestion
+- **Dependencies:** None.
+- **Scope:** Ingest Excel/table-like files into a **SQL store** with **provenance** metadata
+  (source file, sheet, row) on every record. Incremental ingestion (files added over time).
+- **Out of scope:** PDFs/images, chat UI.
+- **Testable output:** Sample Excel files load into the DB; a manual SQL query returns correct
+  rows with provenance attached.
+
+### Phase 2 — Query agent + chat (text-to-SQL) with citations
+- **Dependencies:** Phase 1.
+- **Scope:** LangChain agent that turns NL questions into SQL against the store, runs them, and
+  returns a **cited text answer** (result + source provenance). Basic chat interface.
+- **Out of scope:** Uploads, OCR, advanced guardrails.
+- **Testable output:** The 3 core question types (multi-year aggregation, trend, status/exception)
+  return correct, cited answers on seeded data.
+
+### Phase 3 — Document uploads: OCR + extraction
+- **Dependencies:** Phase 1–2.
+- **Scope:** Upload PDF invoices / images → OCR + extraction into the structured store (with
+  provenance + overall confidence). Support **both** persisting to the dataset and answering about
+  the just-uploaded doc immediately.
+- **Out of scope:** Per-field human review.
+- **Testable output:** An uploaded invoice is queryable alongside existing data, and its source is
+  cited; immediate Q&A about the upload works.
+
+### Phase 4 — Guardrails & confidence behavior
+- **Dependencies:** Phase 2 (and 3 for extraction confidence).
+- **Scope:** Clarifying questions, reasoned abstention with suggestions, "never fabricate,"
+  overall-confidence signaling, prompt-injection-safe handling of document text.
+- **Out of scope:** —
+- **Testable output:** On ambiguous/missing-data questions the agent asks or abstains (with reason)
+  instead of guessing, verified against test cases.
+
+### Phase 5 — Evaluation harness
+- **Dependencies:** Phase 2 (expand as later phases land).
+- **Scope:** Build the **golden set** (~30–50 verified Q&As) and an automated eval scoring numeric
+  correctness, citation correctness, and appropriate abstention. Add thumbs up/down + cost/latency
+  logging in the chat.
+- **Out of scope:** —
+- **Testable output:** `eval` run produces accuracy/citation/abstention scores; chat records
+  feedback and cost/latency per answer.
 
 ## 13. Open Questions
-_TBD_
+
+- **Outbound data policy:** With on-prem hosting but hosted model APIs, what data may leave the
+  network in model calls (raw rows vs. only derived/aggregated values)? (Section 8/9)
+- **Cost:** Budget/ceiling per question and per user/month? (Section 11)
+- **Post-launch ownership & maintenance:** Who operates the system after MVP? (Section 11)
+- **LangChain specifics:** Agent type, tool definitions, SQL/retrieval chain patterns — to detail
+  against the latest LangChain docs. (Section 8)
+- **SQL store choice:** Which database for the structured store (on-prem).
+- **OCR/extraction tooling:** Which OCR/vision approach for PDFs and invoice images.
+- **Confidence signal:** How "overall confidence" is computed and displayed. (Section 9)
+- **Golden set ownership:** Who curates/verifies the golden Q&A set. (Section 10)
