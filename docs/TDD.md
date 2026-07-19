@@ -23,8 +23,7 @@ Derived from the PRD (not re-argued here):
   document) an auditor can check.
 - **Latency** — ≤ ~10s per answer (perceived latency may be improved via streaming).
 - **Read-only** — the agent never mutates the underlying data.
-- **Deployment** — application and data run **on-prem**; **hosted model APIs are permitted** for
-  the LLM calls only.
+- **Deployment** — application and data run **on-prem**; the LLM is a **hosted model API**.
 - **Inputs** — structured tables (Excel), PDFs, and images (invoices); thousands of tables,
   hundreds of rows/cols each, growing over time; plus ad-hoc user uploads.
 - **Extensibility** — single-firm MVP, but data model and services should not preclude future
@@ -45,12 +44,9 @@ flowchart LR
     researcher -->|"asks questions, uploads docs"| app
     app -->|"read-only queries"| store
     files -->|"ingestion / OCR"| store
-    app -->|"prompts + tool calls<br/>(policy-limited data)"| llm
+    app -->|"prompts + tool calls"| llm
     llm -->|"reasoning + tool selection"| app
 ```
-
-External tool of note: the **hosted LLM API** is the only component outside the on-prem boundary;
-what data may cross that boundary is governed by the outbound-data policy (ADR-003).
 
 ---
 
@@ -96,7 +92,7 @@ flowchart LR
         loop["Agent loop<br/>(model + tools)"]
         sqltool["Tool: run_sql_query"]
         rettool["Tool: search_schema / retrieve"]
-        mw["Middleware<br/>(retries, PII, guardrails)"]
+        mw["Middleware<br/>(retries, limits, guardrails)"]
         mem["Checkpointer<br/>(thread history)"]
         ro["response_format<br/>(answer + confidence + citations)"]
     end
@@ -149,7 +145,7 @@ sequenceDiagram
 
 - **`run_sql_query`** — executes a **read-only** SQL query against the structured store and returns
   rows **with provenance columns**. Read-only enforced at the DB layer (see 4.3).
-  - Input: `sql: str` (or a constrained query object — see ADR-005).
+  - Input: `sql: str` (or a constrained query object — see ADR-004).
   - Output: rows + per-row provenance (`source_file`, `sheet_or_page`, `row_id`).
 - **`search_schema` / `retrieve`** — maps a vague question to candidate tables/columns (and does
   qualitative lookups) via the vector index. Never used to compute numbers.
@@ -182,7 +178,9 @@ class AgentAnswer(BaseModel):
 
 - **Guardrails via middleware** where enforcement must be deterministic:
   - `ModelRetryMiddleware` / `ToolRetryMiddleware` — transient API/tool failures.
-  - `PIIMiddleware` — content controls if/where PII handling is required.
+  - `ToolErrorMiddleware` — surface tool errors (e.g., bad SQL) so the model can self-correct.
+  - `ModelCallLimitMiddleware` / `ToolCallLimitMiddleware` — cap calls to prevent runaway loops
+    and control per-answer cost/latency.
   - Custom middleware — enforce read-only, cap query cost/rows, and treat document/OCR text as
     **data, not instructions** (prompt-injection defense).
 - **Human-in-the-loop:** not required for MVP (read-only, no destructive actions).
@@ -284,7 +282,7 @@ Indicative per-answer breakdown (to validate/tune with tracing):
 Use **streaming** (`stream_events`) to improve perceived latency and show tool progress.
 
 ### 7.2 Cost
-Cost is tracked per question and per user/month (Section 8). Budget/ceiling deferred — ADR-004.
+Cost is tracked per question and per user/month (Section 8). Budget/ceiling deferred — ADR-003.
 Levers: model tiering, restricting retrieved context, caching schema descriptions.
 
 ### 7.3 Scalability & extensibility
@@ -292,9 +290,7 @@ Levers: model tiering, restricting retrieved context, caching schema description
 - Multi-tenancy/permissions are out of MVP scope, but the provenance model and query layer should
   allow adding a tenant/scope dimension later without a rewrite.
 
-### 7.4 Security & privacy / threat model
-- **On-prem** app + data; only model calls leave the network, constrained by the outbound-data
-  policy (ADR-003).
+### 7.4 Security & threat model
 - **Prompt injection:** treat all document/OCR content as data (Section 6); middleware enforcement.
 - **Read-only** credentials remove data-mutation risk.
 
@@ -306,7 +302,7 @@ Because accuracy is the #1 goal, the eval harness is a first-class deliverable.
 
 ### 8.1 Golden set
 - Build ~**30–50 verified Q&As** (question, correct answer, expected source(s)) covering the three
-  core question types. Curated with accountants/auditors. Ownership — ADR-006.
+  core question types. Curated with accountants/auditors. Ownership — ADR-005.
 
 ### 8.2 Offline (automated) eval
 - Run against the golden set on a cadence and before releases, using **LangSmith** evals + tracing.
@@ -333,11 +329,9 @@ Pure RAG over chunked documents is unreliable for math/aggregation and weakens t
 ### Open decisions (ADR stubs to resolve)
 - **ADR-001 — SQL store choice:** which on-prem database for the structured store.
 - **ADR-002 — OCR / extraction tooling:** approach for PDFs and invoice images.
-- **ADR-003 — Outbound-data policy:** what may be sent to the hosted LLM (raw rows vs. only
-  derived/aggregated values); shapes prompts, tools, and privacy posture.
-- **ADR-004 — Cost ceiling:** budget per question / per user-month and kill-switch behavior.
-- **ADR-005 — SQL tool interface:** free-form SQL string vs. constrained/parameterized query object.
-- **ADR-006 — Golden-set ownership:** who curates/verifies ground-truth Q&As.
+- **ADR-003 — Cost ceiling:** budget per question / per user-month and kill-switch behavior.
+- **ADR-004 — SQL tool interface:** free-form SQL string vs. constrained/parameterized query object.
+- **ADR-005 — Golden-set ownership:** who curates/verifies ground-truth Q&As.
 
 ---
 
