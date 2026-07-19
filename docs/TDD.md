@@ -178,6 +178,7 @@ class AgentAnswer(BaseModel):
 
 - **Guardrails via middleware** where enforcement must be deterministic:
   - `ModelRetryMiddleware` / `ToolRetryMiddleware` — transient API/tool failures.
+  - `PIIMiddleware` — content controls (detect/redact/mask) where sensitive fields need handling.
   - `ToolErrorMiddleware` — surface tool errors (e.g., bad SQL) so the model can self-correct.
   - `ModelCallLimitMiddleware` / `ToolCallLimitMiddleware` — cap calls to prevent runaway loops
     and control per-answer cost/latency.
