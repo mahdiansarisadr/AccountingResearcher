@@ -174,19 +174,24 @@ class AgentAnswer(BaseModel):
     sql_used: str | None = None       # the query executed (for traceability/eval)
 ```
 
-### 3.3 Production layer — guardrails, HITL, observability
+### 3.3 Production layer — guardrails & observability
 
-- **Guardrails via middleware** where enforcement must be deterministic:
-  - `ModelRetryMiddleware` / `ToolRetryMiddleware` — transient API/tool failures.
-  - `PIIMiddleware` — content controls (detect/redact/mask) where sensitive fields need handling.
-  - `ToolErrorMiddleware` — surface tool errors (e.g., bad SQL) so the model can self-correct.
-  - `ModelCallLimitMiddleware` / `ToolCallLimitMiddleware` — cap calls to prevent runaway loops
-    and control per-answer cost/latency.
-  - Custom middleware — enforce read-only, cap query cost/rows, and treat document/OCR text as
-    **data, not instructions** (prompt-injection defense).
-- **Human-in-the-loop:** not required for MVP (read-only, no destructive actions).
-  `HumanInTheLoopMiddleware` is available if a future write path needs approval.
-- **Observability:** LangSmith tracing on every run (feeds evaluation, Section 8).
+**Middleware** (enforcement that must be deterministic, regardless of model output):
+
+| Middleware | Purpose |
+|---|---|
+| `ModelRetryMiddleware` | Retry transient model/API failures (keep retries/delays small to protect the ≤10s budget). |
+| `ToolRetryMiddleware` | Retry transient tool/DB failures. |
+| `ToolErrorMiddleware` | Convert tool errors (e.g., malformed SQL) into messages the model can see and self-correct. |
+| `ModelCallLimitMiddleware` | Cap model calls per run to prevent runaway loops and control cost/latency. |
+| `ToolCallLimitMiddleware` | Cap tool calls per run (e.g., number of SQL executions). |
+| `PIIMiddleware` | Content controls (detect / redact / mask) for sensitive fields. |
+| Custom middleware | Enforce read-only, cap query result rows, and treat document/OCR text as **data, not instructions** (prompt-injection defense). |
+
+Compose ordering: place `ToolRetryMiddleware` inner (before `ToolErrorMiddleware`) so exceptions
+reach the error handler only after retries are exhausted.
+
+**Observability:** LangSmith tracing on every run (feeds evaluation, Section 8).
 
 ---
 
