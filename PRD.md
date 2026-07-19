@@ -80,14 +80,13 @@ answers are trustworthy and verifiable. Speed and breadth are secondary to corre
 
 **IN scope (MVP):**
 - Chat-based, natural-language Q&A over a single firm's data corpus.
-- Assumes structured data is **already loaded** in the store (see Section 7 assumption).
+- **Bulk ingestion** of the existing corpus into the structured store — built **last (Phase 4)**;
+  earlier phases run against a seeded/sample store (see Section 7).
 - Uploading new PDF invoices / images — both extracted into the dataset and answerable immediately.
 - Cited, traceable **text** answers.
 - **Read-only** behavior: the agent answers questions; it never edits or writes back to the data.
 
 **OUT of scope (MVP / deferred):**
-- **Bulk ingestion pipeline** for the existing corpus (Excel/PDF/image files) — assumed pre-loaded
-  for the MVP.
 - Charts and visualizations.
 - Multi-firm (multi-tenant) support and per-user / per-client data permissions.
 - Any write/edit/modify operations on the data (read-only only).
@@ -129,10 +128,11 @@ The agent must answer questions over a **mixed, growing corpus** of financial da
   relies on a queryable structured store + retrieval, not stuffing raw files into prompts.
   Detailed approach in Section 8.)
 
-**MVP assumption:** The existing corpus is **assumed to be already loaded** into the structured
-store (with provenance). Building the **bulk ingestion pipeline** for existing Excel/PDF/image
-files is **out of scope for the MVP** (deferred). The only ingestion the MVP performs is for user
-**uploads** (below).
+**Build sequencing:** The **bulk ingestion pipeline** for the existing corpus is built **last
+(Phase 4)**. Until then, earlier phases (query agent, guardrails, evaluation) run against a
+**seeded/sample store** — a representative subset loaded with provenance — so the core experience
+can be built and tested before full ingestion is in place. User **uploads** (below) are handled in
+the same final phase as bulk ingestion.
 
 **Handling uploads (PDF invoices / images):** Both behaviors are required —
 1. **Extract & persist:** parse the document (OCR for images/PDFs), structure the extracted data,
@@ -178,11 +178,10 @@ files is **out of scope for the MVP** (deferred). The only ingestion the MVP per
 The dataset is far too large for prompts, and the #1 goal is accuracy — so the design favors
 **structured querying over document RAG** for anything quantitative:
 
-0. **Assumption (MVP):** The existing corpus is **already loaded into the structured store**
-   (SQL database) with provenance metadata. Building the bulk ingestion pipeline for existing
-   Excel files is **out of scope for the MVP** (deferred). The only ingestion the MVP performs is
-   for user **uploads** (Section 7 / Phase 2). Each record retains **provenance** (source file,
-   sheet/page, row) to power citations.
+0. **Structured store + ingestion:** Data lives in a **structured store (SQL database)** where each
+   record retains **provenance** (source file, sheet/page, row) to power citations. The **bulk
+   ingestion pipeline** (existing corpus) and **document uploads** (OCR + extraction) are built
+   **last (Phase 4)**; earlier phases run against a **seeded/sample store** (Section 7).
 1. **Query layer (text-to-SQL / tool-driven):** The agent translates natural-language questions
    into **queries against the structured store**, so aggregations and trends are computed exactly
    (not estimated by the LLM). This is both more accurate and naturally traceable.
@@ -266,31 +265,22 @@ online operational metrics per Section 10.)
 Sequential phases for the single-firm MVP. Each has bounded scope and a testable output.
 _(Proposed — pending review.)_
 
-> **Pre-req (not a phase):** Structured data is assumed already loaded in the SQL store with
-> provenance (bulk ingestion is deferred — see Sections 5 & 7). Phases start from a populated store.
+> **Starting point (early phases):** Phases 1–3 work against a **seeded/pre-loaded** structured
+> store (a representative sample loaded with provenance). Full ingestion is built last, in Phase 4.
 
 ### Phase 1 — Query agent + chat (text-to-SQL) with citations
-- **Dependencies:** Populated structured store (pre-req).
+- **Dependencies:** Seeded structured store.
 - **Scope:** LangChain agent (via **`create_agent`**,
   https://docs.langchain.com/oss/python/langchain/agents) with a **SQL query tool** over the store;
   turns NL questions into SQL, runs them, and returns a **cited text answer** (result + source
   provenance) using **structured output** (`response_format`) for the confidence + citations.
   Basic chat interface with **streaming** and **checkpointer**-backed multi-turn history.
-- **Out of scope:** Uploads, OCR, advanced guardrails.
+- **Out of scope:** Uploads, OCR, advanced guardrails, ingestion.
 - **Testable output:** The 3 core question types (multi-year aggregation, trend, status/exception)
   return correct, cited answers on the seeded store.
 
-### Phase 2 — Document uploads: OCR + extraction
+### Phase 2 — Guardrails & confidence behavior
 - **Dependencies:** Phase 1.
-- **Scope:** Upload PDF invoices / images → OCR + extraction into the structured store (with
-  provenance + overall confidence). Support **both** persisting to the dataset and answering about
-  the just-uploaded doc immediately. (This is the only ingestion in the MVP.)
-- **Out of scope:** Per-field human review; bulk ingestion of the existing corpus.
-- **Testable output:** An uploaded invoice is queryable alongside existing data, and its source is
-  cited; immediate Q&A about the upload works.
-
-### Phase 3 — Guardrails & confidence behavior
-- **Dependencies:** Phase 1 (and 2 for extraction confidence).
 - **Scope:** Clarifying questions, reasoned abstention with suggestions, "never fabricate,"
   overall-confidence signaling, prompt-injection-safe handling of document text. Use LangChain
   **middleware** where deterministic enforcement is needed (e.g., retries, content controls).
@@ -298,7 +288,7 @@ _(Proposed — pending review.)_
 - **Testable output:** On ambiguous/missing-data questions the agent asks or abstains (with reason)
   instead of guessing, verified against test cases.
 
-### Phase 4 — Evaluation harness
+### Phase 3 — Evaluation harness
 - **Dependencies:** Phase 1 (expand as later phases land).
 - **Scope:** Build the **golden set** (~30–50 verified Q&As) and an automated eval scoring numeric
   correctness, citation correctness, and appropriate abstention (leveraging **LangSmith** tracing/
@@ -306,6 +296,20 @@ _(Proposed — pending review.)_
 - **Out of scope:** —
 - **Testable output:** `eval` run produces accuracy/citation/abstention scores; chat records
   feedback and cost/latency per answer.
+
+### Phase 4 — Ingestion + document uploads (OCR + extraction)
+- **Dependencies:** Phases 1–3.
+- **Scope:** Two related capabilities:
+  1. **Bulk ingestion pipeline** — load the existing corpus (Excel/PDF/image files) into the
+     structured store with **provenance**, replacing the seeded sample used in earlier phases.
+     Incremental (handles files added over time).
+  2. **Document uploads** — upload PDF invoices / images → OCR + extraction into the store (with
+     provenance + overall confidence), supporting **both** persisting to the dataset and answering
+     about the just-uploaded doc immediately.
+- **Out of scope:** Per-field human review.
+- **Testable output:** The real corpus loads and is queryable with correct citations; an uploaded
+  invoice is queryable alongside existing data and its source is cited; immediate Q&A on an upload
+  works.
 
 ## 13. Open Questions
 
