@@ -191,6 +191,20 @@ class AgentAnswer(BaseModel):
 Compose ordering: place `ToolRetryMiddleware` inner (before `ToolErrorMiddleware`) so exceptions
 reach the error handler only after retries are exhausted.
 
+**Failure handling & fallbacks.** Every failure mode funnels into one consistent terminal
+fallback — **graceful abstention** (a clear "I couldn't answer, and why"), never a fabricated
+answer (satisfies the accuracy requirement). What differs is what is attempted first:
+
+| Failure | Attempt first | Terminal fallback |
+|---|---|---|
+| Model call fails (timeout / 5xx / 429) | `ModelRetryMiddleware` (small backoff) | Abstain: temporarily unavailable, ask user to retry |
+| Tool / DB call fails (transient) | `ToolRetryMiddleware`; error surfaced via `on_failure="continue"` | Abstain: couldn't retrieve the data |
+| Malformed SQL generated | `ToolErrorMiddleware` → model self-corrects the query | Abstain after the tool-call limit is hit |
+| Model / tool call limit reached | (the limit is the guard) | Abstain: couldn't answer within the allowed steps |
+
+No alternate-model fallback in the MVP: on repeated model failure the agent retries within budget
+and then abstains (single provider). `ModelFallbackMiddleware` is intentionally not used for now.
+
 **Observability:** LangSmith tracing on every run (feeds evaluation, Section 8).
 
 ---
