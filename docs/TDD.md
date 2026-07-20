@@ -434,9 +434,9 @@ Phases mirror the PRD roadmap; here with technical detail. Phases 1–3 run on t
 ### Phase 1 — Query agent + chat (text-to-SQL) with citations
 `create_agent` with the `search_schema` + `run_sql_query` tools over the seeded store (incl. a
 schema catalog for the seed); `response_format` for answer/confidence/citations; chat with streaming
-+ checkpointer history.
++ checkpointer history. **LangSmith tracing enabled from the start** for run visibility/debugging.
 **Exit:** the 3 core question types return correct, cited answers — selecting the right tables — on
-the seed store.
+the seed store, with runs traced in LangSmith.
 
 ### Phase 2 — Guardrails & confidence behavior
 Clarify/abstain logic, "never fabricate," confidence signaling, injection-safe data handling;
