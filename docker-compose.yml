@@ -1,0 +1,22 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: ar_postgres
+    environment:
+      POSTGRES_USER: ar_admin
+      POSTGRES_PASSWORD: ar_admin
+      POSTGRES_DB: accounting
+    ports:
+      # Host 5433 -> container 5432 (avoids clashing with a local Postgres on 5432)
+      - "5433:5432"
+    volumes:
+      - ar_pgdata:/var/lib/postgresql/data
+      - ./test_database_resources/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ar_admin -d accounting"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  ar_pgdata:
