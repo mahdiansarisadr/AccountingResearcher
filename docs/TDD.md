@@ -60,7 +60,7 @@ flowchart TB
     api["Backend API service<br/>(Python)"]
     agent["Agent runtime<br/>(LangChain create_agent)"]
     sql[("SQL store<br/>structured + provenance")]
-    vec[("Vector index<br/>optional, for table/column routing")]
+    vec[("Schema catalog + vector index<br/>table/column retrieval")]
     ingest["Ingestion pipeline<br/>(Excel loader + OCR/extraction)"]
     obs["Observability + eval<br/>(LangSmith / tracing)"]
     llm["Hosted LLM API"]
@@ -79,9 +79,11 @@ flowchart TB
 - **Backend API** — session/auth, request handling, invokes the agent runtime.
 - **Agent runtime** — the LangChain `create_agent` harness (Section 3).
 - **SQL store** — canonical structured data with provenance; the source of exact numeric answers.
-- **Vector index (optional)** — semantic routing of vague questions to the right tables/columns and
-  qualitative lookups; not used for arithmetic.
-- **Ingestion pipeline** — loads the existing corpus and processes uploads (OCR + extraction).
+- **Schema catalog + vector index** — searchable index of table/column metadata used to select the
+  few relevant tables per query (essential at thousands-of-tables scale); also supports optional
+  qualitative content lookups. Holds metadata only, never numeric answers.
+- **Ingestion pipeline** — loads the existing corpus and processes uploads (OCR + extraction), and
+  builds/updates the schema catalog.
 - **Observability/eval** — tracing and evaluation of agent runs.
 
 ### 2.2 Component view (C4 L3)
@@ -91,7 +93,7 @@ flowchart LR
     subgraph agentrt["Agent runtime"]
         loop["Agent loop<br/>(model + tools)"]
         sqltool["Tool: run_sql_query"]
-        rettool["Tool: search_schema / retrieve"]
+        rettool["Tool: search_schema<br/>(table/column retrieval)"]
         mw["Middleware<br/>(retries, limits, guardrails)"]
         mem["Checkpointer<br/>(thread history)"]
         ro["response_format<br/>(answer + confidence + citations)"]
@@ -130,9 +132,9 @@ sequenceDiagram
     participant M as LLM
 
     U->>A: natural-language question
-    A->>M: plan (which tables/tools?)
-    A->>R: (optional) find relevant tables/columns
-    A->>M: draft SQL
+    A->>R: retrieve candidate tables/columns (schema search)
+    R-->>A: top-K relevant schemas
+    A->>M: draft SQL against retrieved schemas
     A->>S: execute SQL (read-only)
     S-->>A: result rows + provenance
     A->>M: compose answer w/ citations + confidence
@@ -144,15 +146,29 @@ sequenceDiagram
 **Tools** (`@tool`), with descriptions written carefully (agents select tools by description):
 
 - **`run_sql_query`** — executes a **read-only** SQL query against the structured store and returns
-  rows **with provenance columns**. Read-only enforced at the DB layer (see 4.3).
+  rows **with provenance columns**. Read-only enforced at the DB layer (see 4.4).
   - Input: `sql: str` (or a constrained query object — see ADR-004).
   - Output: rows + per-row provenance (`source_file`, `sheet_or_page`, `row_id`).
-- **`search_schema` / `retrieve`** — maps a vague question to candidate tables/columns (and does
-  qualitative lookups) via the vector index. Never used to compute numbers.
+- **`search_schema`** — given the question, returns the **few candidate tables/columns** most likely
+  relevant, from the schema catalog (4.2). Required at thousands-of-tables scale: the model never
+  sees the full schema, only the retrieved subset it needs to write SQL. Returns table/column names
+  + descriptions (metadata, not row data).
 
-**Retrieval strategy:** structured querying is primary; RAG is a *supporting* router for
-disambiguation and qualitative questions. Arithmetic/aggregation always runs in SQL, never LLM
-estimation (satisfies the accuracy requirement).
+**Schema retrieval strategy (table selection).** With thousands of tables, selecting the right ones
+is the single largest accuracy lever, so it is a first-class step, not an afterthought:
+- **Index** table/column metadata in the schema catalog (4.2): names, human/LLM-authored
+  descriptions, and representative sample values.
+- **Retrieve** the top-K candidate tables per query using **hybrid search** (semantic embeddings +
+  keyword/BM25) to handle both business-term synonyms (e.g., "travel" vs. "T&E") and cryptic column
+  names.
+- **Two-stage** when the schema is large: first select candidate tables, then the relevant columns
+  within them.
+- **On low retrieval confidence** (nothing clearly relevant), the agent asks a clarifying question
+  or abstains rather than guessing a table — consistent with the failure policy (3.3).
+
+**Query strategy:** structured querying is primary; content-level RAG is only a supporting lookup
+for qualitative questions. Arithmetic/aggregation always runs in SQL, never LLM estimation
+(satisfies the accuracy requirement).
 
 **Memory & state:** multi-turn history via a **checkpointer + `thread_id`** (one thread per
 conversation). Locally use `InMemorySaver`; production uses a persistent checkpointer.
@@ -217,7 +233,25 @@ and then abstains (single provider). `ModelFallbackMiddleware` is intentionally 
   exact modeling (one-table-per-source vs. a unified schema) is an implementation detail of the
   ingestion pipeline and evolves with real data.
 
-### 4.2 Provenance model
+### 4.2 Schema catalog & retrieval index
+Because the corpus has thousands of tables, the agent selects relevant tables via a **schema
+catalog** (queried by `search_schema`, 3.2) instead of ever seeing the whole schema. For each
+table/column it stores:
+
+| Field | Meaning |
+|---|---|
+| `table_name` / `column_name` | Identifiers |
+| `description` | Human- or LLM-authored description of what the table/column holds |
+| `sample_values` | A few representative values to aid matching |
+| `embedding` | Vector for semantic retrieval |
+
+- Built and kept current by the **ingestion pipeline** (4.5); indexed for **hybrid** (semantic +
+  keyword) search.
+- Holds **metadata only** — never the numeric answers (those come from SQL against the structured
+  store).
+- Retrieval quality here is the top accuracy risk — see ADR-006.
+
+### 4.3 Provenance model
 Every queryable record carries provenance so answers are traceable:
 
 | Field | Meaning |
@@ -229,11 +263,11 @@ Every queryable record carries provenance so answers are traceable:
 | `ingested_at` | Timestamp |
 | `extraction_confidence` | For OCR/extracted records (nullable for native tables) |
 
-### 4.3 Read-only enforcement
+### 4.4 Read-only enforcement
 - The agent's DB credentials are **read-only** (no INSERT/UPDATE/DELETE/DDL).
 - The `run_sql_query` tool additionally rejects non-`SELECT` statements as defense-in-depth.
 
-### 4.4 Ingestion & uploads (built last — see rollout)
+### 4.5 Ingestion & uploads (built last — see rollout)
 ```mermaid
 flowchart LR
     x["Excel files"] --> loader["Table loader"]
@@ -241,19 +275,22 @@ flowchart LR
     loader --> norm["Normalize + attach provenance"]
     ocr --> norm
     norm --> sql[("SQL store")]
-    norm --> vec[("Vector index")]
+    norm --> cat[("Schema catalog")]
 ```
 - **Bulk ingestion:** incremental (handles files added over time); replaces the seed/sample store
   used by earlier phases.
 - **Uploads:** same pipeline, invoked on-demand; supports **persist to store** *and*
   **answer-in-the-moment** about the just-uploaded document.
+- **Schema catalog:** ingestion also builds/updates the schema catalog (4.2) — table/column
+  descriptions, sample values, and embeddings — so newly ingested data becomes retrievable.
 - OCR/extraction tooling deferred — see ADR-002.
 
-### 4.5 Seed / sample store (for early phases)
-Phases 1–3 run against a **representative seeded subset** loaded with provenance, so the query
-agent, guardrails, and eval harness can be built and validated before full ingestion exists. The
-seed must cover the three core question types (multi-year aggregation, trend, status/exception) and
-a mix of source types.
+### 4.6 Seed / sample store (for early phases)
+Phases 1–3 run against a **representative seeded subset** loaded with provenance **and its schema
+catalog (4.2)**, so the query agent, schema retrieval, guardrails, and eval harness can be built and
+validated before full ingestion exists. The seed must include enough tables to exercise **table
+selection** (not just a couple), cover the three core question types (multi-year aggregation, trend,
+status/exception), and a mix of source types.
 
 ---
 
@@ -262,7 +299,8 @@ a mix of source types.
 - **Specify capabilities, not fixed versions** (models change fast):
   - Strong reasoning + reliable **tool/function calling** (drives SQL generation).
   - **Multimodal/vision** or a paired OCR step for images and scanned PDFs.
-  - Context window large enough for retrieved rows + citations.
+  - Context window large enough for retrieved schemas + rows + citations.
+  - An **embedding model** for schema-catalog retrieval (see ADR-006).
 - **Model-to-task matching:** a stronger model for question→SQL reasoning; a cheaper/faster model
   (or deterministic parsers) for high-volume extraction where adequate — to control cost/latency.
 - **Provider:** hosted API (OpenAI/Anthropic-class). Exact model pinned at implementation time and
@@ -293,7 +331,7 @@ Indicative per-answer breakdown (to validate/tune with tracing):
 
 | Stage | Budget |
 |---|---|
-| Planning + schema routing | ~1–2s |
+| Schema retrieval (table selection) | ~1–2s |
 | SQL generation | ~1–3s |
 | SQL execution | <1s (indexed) |
 | Answer composition | ~1–3s |
@@ -306,9 +344,12 @@ Cost is tracked per question and per user/month (Section 8). Budget/ceiling defe
 Levers: model tiering, restricting retrieved context, caching schema descriptions.
 
 ### 7.3 Scalability & extensibility
-- Ingestion is incremental for a growing corpus.
-- Multi-tenancy/permissions are out of MVP scope, but the provenance model and query layer should
-  allow adding a tenant/scope dimension later without a rewrite.
+- Ingestion is incremental for a growing corpus; new tables are added to the schema catalog.
+- **Schema retrieval keeps per-query context bounded regardless of corpus size** — the model only
+  ever sees the top-K retrieved tables, so growing from thousands to more tables does not grow the
+  prompt (it raises the bar on retrieval quality, not context length).
+- Multi-tenancy/permissions are out of MVP scope, but the provenance model, schema catalog, and
+  query layer should allow adding a tenant/scope dimension later without a rewrite.
 
 ### 7.4 Security & threat model
 - **Prompt injection:** treat all document/OCR content as data (Section 6); middleware enforcement.
@@ -321,12 +362,14 @@ Levers: model tiering, restricting retrieved context, caching schema description
 Because accuracy is the #1 goal, the eval harness is a first-class deliverable.
 
 ### 8.1 Golden set
-- Build ~**30–50 verified Q&As** (question, correct answer, expected source(s)) covering the three
-  core question types. Curated with accountants/auditors. Ownership — ADR-005.
+- Build ~**30–50 verified Q&As** (question, correct answer, **expected tables/source(s)**) covering
+  the three core question types. Curated with accountants/auditors. Ownership — ADR-005.
 
 ### 8.2 Offline (automated) eval
 - Run against the golden set on a cadence and before releases, using **LangSmith** evals + tracing.
 - Scored dimensions:
+  - **Table-selection correctness** — schema retrieval surfaced/used the expected tables (isolates
+    the top accuracy risk from the SQL/answer step).
   - **Numeric correctness** — value matches expected (exact / defined tolerance).
   - **Citation correctness** — cited source(s) match expected file/sheet/row/doc.
   - **Appropriate abstention** — abstains only when it should; answers when it can.
@@ -352,18 +395,23 @@ Pure RAG over chunked documents is unreliable for math/aggregation and weakens t
 - **ADR-003 — Cost ceiling:** budget per question / per user-month and kill-switch behavior.
 - **ADR-004 — SQL tool interface:** free-form SQL string vs. constrained/parameterized query object.
 - **ADR-005 — Golden-set ownership:** who curates/verifies ground-truth Q&As.
+- **ADR-006 — Schema retrieval approach:** embedding model, hybrid-search setup, single- vs.
+  two-stage retrieval, and who authors table/column descriptions (metadata enrichment). This is the
+  top accuracy lever/risk (see 3.2, 4.2).
 
 ---
 
 ## 10. Rollout / Milestones (technical)
 
 Phases mirror the PRD roadmap; here with technical detail. Phases 1–3 run on the seed/sample store
-(4.5); ingestion + uploads land in Phase 4.
+(4.6); ingestion + uploads land in Phase 4.
 
 ### Phase 1 — Query agent + chat (text-to-SQL) with citations
-`create_agent` + `run_sql_query` tool over the seeded store; `response_format` for
-answer/confidence/citations; chat with streaming + checkpointer history.
-**Exit:** the 3 core question types return correct, cited answers on the seed store.
+`create_agent` with the `search_schema` + `run_sql_query` tools over the seeded store (incl. a
+schema catalog for the seed); `response_format` for answer/confidence/citations; chat with streaming
++ checkpointer history.
+**Exit:** the 3 core question types return correct, cited answers — selecting the right tables — on
+the seed store.
 
 ### Phase 2 — Guardrails & confidence behavior
 Clarify/abstain logic, "never fabricate," confidence signaling, injection-safe data handling;
@@ -376,7 +424,7 @@ latency logging.
 **Exit:** `eval` run emits accuracy/citation/abstention scores; chat records feedback + cost/latency.
 
 ### Phase 4 — Ingestion + document uploads (OCR + extraction)
-Bulk incremental ingestion of the real corpus with provenance (replaces the seed store); upload
-pipeline (OCR + extraction) supporting persist + answer-in-the-moment.
-**Exit:** real corpus queryable with correct citations; uploaded invoice queryable and cited;
-immediate Q&A on an upload works.
+Bulk incremental ingestion of the real corpus with provenance **and a full schema catalog** (4.2)
+(replaces the seed store); upload pipeline (OCR + extraction) supporting persist + answer-in-the-moment.
+**Exit:** real corpus queryable with correct citations; table selection works at full scale; an
+uploaded invoice is queryable and cited; immediate Q&A on an upload works.
