@@ -80,8 +80,8 @@ flowchart TB
 - **Agent runtime** — the LangChain `create_agent` harness (Section 3).
 - **SQL store** — canonical structured data with provenance; the source of exact numeric answers.
 - **Schema catalog + vector index** — searchable index of table/column metadata used to select the
-  few relevant tables per query (essential at thousands-of-tables scale); also supports optional
-  qualitative content lookups. Holds metadata only, never numeric answers.
+  few relevant tables per query (essential at thousands-of-tables scale). Holds metadata only, never
+  numeric answers.
 - **Ingestion pipeline** — loads the existing corpus and processes uploads (OCR + extraction), and
   builds/updates the schema catalog.
 - **Observability/eval** — tracing and evaluation of agent runs.
@@ -166,9 +166,9 @@ is the single largest accuracy lever, so it is a first-class step, not an aftert
 - **On low retrieval confidence** (nothing clearly relevant), the agent asks a clarifying question
   or abstains rather than guessing a table — consistent with the failure policy (3.3).
 
-**Query strategy:** structured querying is primary; content-level RAG is only a supporting lookup
-for qualitative questions. Arithmetic/aggregation always runs in SQL, never LLM estimation
-(satisfies the accuracy requirement).
+**Query strategy:** all answers are produced by SQL over the structured store; retrieval is used
+only to select the right tables/columns, not to answer. Arithmetic/aggregation always runs in SQL,
+never LLM estimation (satisfies the accuracy requirement).
 
 **Memory & state:** multi-turn history via a **checkpointer + `thread_id`** (one thread per
 conversation). Locally use `InMemorySaver`; production uses a persistent checkpointer.
@@ -387,7 +387,8 @@ Because accuracy is the #1 goal, the eval harness is a first-class deliverable.
 
 ### Alternative: document-RAG for everything (rejected)
 Pure RAG over chunked documents is unreliable for math/aggregation and weakens traceability.
-**Decision:** structured **text-to-SQL** for quantitative answers; RAG only as a supporting router.
+**Decision:** structured **text-to-SQL** for answers; retrieval is used only for schema/table
+selection, not for answering.
 
 ### Open decisions (ADR stubs to resolve)
 - **ADR-001 — SQL store choice:** which on-prem database for the structured store.
