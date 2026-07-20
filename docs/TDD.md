@@ -94,10 +94,11 @@ flowchart LR
 - **Chat frontend** — thin UI; renders streamed tokens, citations, and a confidence indicator.
 - **Backend API** — session/auth, request handling, invokes the agent runtime.
 - **Agent runtime** — the LangChain `create_agent` harness (Section 3).
-- **SQL store** — canonical structured data with provenance; the source of exact numeric answers.
-- **Schema catalog + vector index** — searchable index of table/column metadata used to select the
-  few relevant tables per query (essential at thousands-of-tables scale). Holds metadata only, never
+- **SQL store** (PostgreSQL) — canonical structured data with provenance; the source of exact
   numeric answers.
+- **Schema catalog + vector index** (PostgreSQL + pgvector) — searchable index of table/column
+  metadata used to select the few relevant tables per query (essential at thousands-of-tables
+  scale). Same Postgres instance as the SQL store. Holds metadata only, never numeric answers.
 - **Ingestion pipeline** — loads the existing corpus and processes uploads (OCR + extraction), and
   builds/updates the schema catalog.
 - **Observability/eval** — tracing and evaluation of agent runs.
@@ -187,7 +188,7 @@ only to select the right tables/columns, not to answer. Arithmetic/aggregation a
 never LLM estimation (satisfies the accuracy requirement).
 
 **Memory & state:** multi-turn history via a **checkpointer + `thread_id`** (one thread per
-conversation). Locally use `InMemorySaver`; production uses a persistent checkpointer.
+conversation). Locally use `InMemorySaver`; production uses a persistent checkpointer (Postgres).
 
 **Structured output** (`response_format=` Pydantic) so every answer is machine-checkable:
 
@@ -244,7 +245,8 @@ and then abstains (single provider). `ModelFallbackMiddleware` is intentionally 
 ## 4. Data Design
 
 ### 4.1 Structured store
-- A **SQL database** is the canonical store for all queryable data. Choice deferred — see ADR-001.
+- **PostgreSQL** is the canonical store for all queryable data (ADR-001). Runs on-prem; the same
+  engine also backs the schema catalog (via pgvector, 4.2) and can host conversation checkpoints.
 - Original heterogeneous tables are normalized/loaded such that they can be queried by the agent;
   exact modeling (one-table-per-source vs. a unified schema) is an implementation detail of the
   ingestion pipeline and evolves with real data.
@@ -261,8 +263,9 @@ table/column it stores:
 | `sample_values` | A few representative values to aid matching |
 | `embedding` | Vector for semantic retrieval |
 
-- Built and kept current by the **ingestion pipeline** (4.5); indexed for **hybrid** (semantic +
-  keyword) search.
+- Stored in the **same PostgreSQL** instance: embeddings via **pgvector** (HNSW index), plus
+  Postgres **full-text search** for keyword matching — together giving **hybrid** (semantic +
+  keyword) retrieval. Built and kept current by the **ingestion pipeline** (4.5).
 - Holds **metadata only** — never the numeric answers (those come from SQL against the structured
   store).
 - Retrieval quality here is the top accuracy risk — see ADR-006.
@@ -406,15 +409,20 @@ Pure RAG over chunked documents is unreliable for math/aggregation and weakens t
 **Decision:** structured **text-to-SQL** for answers; retrieval is used only for schema/table
 selection, not for answering.
 
+### Decided
+- **ADR-001 — Storage:** **PostgreSQL + pgvector** — one on-prem system for both the structured
+  store and the schema-catalog embeddings; hybrid retrieval via pgvector (HNSW) + Postgres full-text
+  search. May also host conversation checkpoints. Chosen for operational simplicity (single system)
+  and right-sized for the catalog's scale.
+
 ### Open decisions (ADR stubs to resolve)
-- **ADR-001 — SQL store choice:** which on-prem database for the structured store.
 - **ADR-002 — OCR / extraction tooling:** approach for PDFs and invoice images.
 - **ADR-003 — Cost ceiling:** budget per question / per user-month and kill-switch behavior.
 - **ADR-004 — SQL tool interface:** free-form SQL string vs. constrained/parameterized query object.
 - **ADR-005 — Golden-set ownership:** who curates/verifies ground-truth Q&As.
-- **ADR-006 — Schema retrieval approach:** embedding model, hybrid-search setup, single- vs.
-  two-stage retrieval, and who authors table/column descriptions (metadata enrichment). This is the
-  top accuracy lever/risk (see 3.2, 4.2).
+- **ADR-006 — Schema retrieval approach:** embedding model, hybrid-search tuning (pgvector + Postgres
+  full-text), single- vs. two-stage retrieval, and who authors table/column descriptions (metadata
+  enrichment). This is the top accuracy lever/risk (see 3.2, 4.2).
 
 ---
 
