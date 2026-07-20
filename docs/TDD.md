@@ -55,24 +55,40 @@ flowchart LR
 ### 2.1 Container view (C4 L2)
 
 ```mermaid
-flowchart TB
-    ui["Chat frontend<br/>(streaming UI)"]
-    api["Backend API service<br/>(Python)"]
-    agent["Agent runtime<br/>(LangChain create_agent)"]
-    sql[("SQL store<br/>structured + provenance")]
-    vec[("Schema catalog + vector index<br/>table/column retrieval")]
-    ingest["Ingestion pipeline<br/>(Excel loader + OCR/extraction)"]
-    obs["Observability + eval<br/>(LangSmith / tracing)"]
-    llm["Hosted LLM API"]
+flowchart LR
+    user["Accountant / Auditor"]
 
-    ui -->|HTTP / SSE| api
-    api --> agent
-    agent -->|SQL tool| sql
-    agent -->|retrieval tool| vec
+    subgraph query["Query path (read)"]
+        direction LR
+        ui["Chat frontend<br/>(streaming UI)"]
+        api["Backend API<br/>(Python)"]
+        agent["Agent runtime<br/>(LangChain create_agent)"]
+    end
+
+    subgraph stores["Data stores"]
+        direction TB
+        sql[("SQL store<br/>structured + provenance")]
+        cat[("Schema catalog<br/>+ vector index")]
+    end
+
+    subgraph ingestion["Ingestion path (write)"]
+        direction LR
+        files["Firm corpus + uploads<br/>Excel / PDF / images"]
+        ingest["Ingestion pipeline<br/>(loader + OCR/extraction)"]
+    end
+
+    llm["Hosted LLM API"]
+    obs["Observability + eval<br/>(LangSmith / tracing)"]
+
+    user -->|HTTP / SSE| ui --> api --> agent
     agent -->|model calls| llm
-    ingest --> sql
-    ingest --> vec
+    agent -->|run_sql_query| sql
+    agent -->|search_schema| cat
     agent --> obs
+
+    files --> ingest
+    ingest -->|load + provenance| sql
+    ingest -->|build catalog| cat
 ```
 
 - **Chat frontend** — thin UI; renders streamed tokens, citations, and a confidence indicator.
