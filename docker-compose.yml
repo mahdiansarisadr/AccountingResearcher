@@ -1,5 +1,5 @@
 services:
-  db:
+  postgres:
     image: pgvector/pgvector:pg16
     container_name: ar_postgres
     environment:
@@ -18,5 +18,21 @@ services:
       timeout: 3s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    container_name: ar_redis
+    # appendonly keeps queued jobs across restarts, so runs are not silently lost.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ar_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
 volumes:
   ar_pgdata:
+  ar_redisdata:
