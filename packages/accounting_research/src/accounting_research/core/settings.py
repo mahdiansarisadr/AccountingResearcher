@@ -11,9 +11,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Repo root (…/AcountingResearcher), derived from this file's location:
-# src/accounting_research/core/settings.py -> parents[3]
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DB_RESOURCES_DIRNAME = "test_database_resources"
+
+
+def _default_db_resources_dir() -> Path:
+    """Locate test_database_resources/ by walking up from the CWD and this file.
+
+    Robust to where the package lives in the repo (e.g. under packages/…) and to
+    where the command is launched from. Overridable via AR_DB_RESOURCES_DIR.
+    """
+    for base in (Path.cwd(), Path(__file__).resolve()):
+        for parent in (base, *base.parents):
+            candidate = parent / _DB_RESOURCES_DIRNAME
+            if candidate.is_dir():
+                return candidate
+    return Path.cwd() / _DB_RESOURCES_DIRNAME
 
 
 @dataclass(frozen=True)
@@ -74,7 +86,9 @@ def get_settings() -> Settings:
         ),
         schema_top_k=int(os.getenv("AR_SCHEMA_TOP_K", "5")),
         max_result_rows=int(os.getenv("AR_MAX_RESULT_ROWS", "200")),
-        db_resources_dir=Path(
-            os.getenv("AR_DB_RESOURCES_DIR", str(_REPO_ROOT / "test_database_resources"))
+        db_resources_dir=(
+            Path(os.environ["AR_DB_RESOURCES_DIR"])
+            if os.getenv("AR_DB_RESOURCES_DIR")
+            else _default_db_resources_dir()
         ),
     )

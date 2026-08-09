@@ -1,29 +1,21 @@
 [project]
-name = "accounting-agent"
-version = "0.1.0"
-description = "Accounting Research Assistant — Phase 1 (text-to-SQL agent with citations)"
-readme = "README.md"
+name = "accounting-workspace"
+version = "0.0.0"
+description = "Workspace root for the Accounting Research Assistant (agent + services)."
 requires-python = ">=3.11"
+# Depend on the workspace members so `uv sync` / `uv run` keep them installed in
+# the shared environment (the root itself is not a shipped package).
 dependencies = [
-    "langchain>=1.0.0",
-    "langchain-openai>=0.3.0",
-    "langgraph>=0.6.0",
-    "langsmith>=0.3.0",
-    "psycopg[binary]>=3.2.0",
-    "pgvector>=0.3.0",
-    "pydantic>=2.7.0",
-    "python-dotenv>=1.0.0",
-    "pyyaml>=6.0",
+    "accounting-research",
+    "api",
 ]
 
-[project.scripts]
-ar-seed = "accounting_research.ingestion.seed:main"
-ar-catalog = "accounting_research.retrieval.catalog:main"
-ar-chat = "accounting_research.interfaces.cli:main"
+[tool.uv]
+package = false
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.uv.workspace]
+members = ["packages/*", "services/*"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/accounting_research"]
+[tool.uv.sources]
+accounting-research = { workspace = true }
+api = { workspace = true }
