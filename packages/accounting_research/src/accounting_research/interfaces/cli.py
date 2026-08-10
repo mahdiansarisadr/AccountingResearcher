@@ -1,5 +1,9 @@
 """CLI chat interface for the Accounting Research Assistant.
 
+A thin renderer over :func:`accounting_research.agent.runner.run_agent`. The CLI
+deliberately owns no execution logic — it turns run events into terminal output,
+exactly as the web layer turns the same events into SSE.
+
 Usage:
     ar-chat                  interactive chat
     ar-chat --ask "..."      one-shot question
@@ -10,9 +14,9 @@ from __future__ import annotations
 
 import argparse
 import sys
-from uuid import uuid4
 
 from ..agent.builder import build_agent
+from ..agent.runner import Message, run_agent
 from ..agent.schemas import AgentAnswer
 
 SMOKE_QUESTIONS = [
@@ -22,67 +26,63 @@ SMOKE_QUESTIONS = [
 ]
 
 
-def _print_progress(message) -> None:
-    mtype = getattr(message, "type", None)
-    tool_calls = getattr(message, "tool_calls", None)
-    if tool_calls:
-        for tc in tool_calls:
-            args = tc.get("args", {})
-            preview = args.get("query") or args.get("sql") or ""
-            preview = (preview[:80] + "...") if len(str(preview)) > 80 else preview
-            print(f"  \u2192 {tc['name']}: {preview}")
-    elif mtype == "tool":
-        name = getattr(message, "name", "tool")
-        content = str(getattr(message, "content", ""))
-        note = "error" if content.startswith("ERROR") else f"{len(content)} chars"
-        print(f"  \u2190 {name} returned ({note})")
+def _preview(args: dict) -> str:
+    text = str(args.get("query") or args.get("sql") or "")
+    return (text[:80] + "...") if len(text) > 80 else text
 
 
-def _render(answer: AgentAnswer | None) -> None:
-    if answer is None:
-        print("\n[unavailable] The agent could not produce a grounded answer "
-              "within its step budget. Please rephrase or try again.")
-        return
-
-    print()
+def _render_metadata(answer: AgentAnswer) -> None:
+    """Print what streaming could not: the parts that only exist once complete."""
     if answer.abstained:
-        print(f"[abstained] {answer.answer}")
+        print("\n  [abstained]", end="")
         if answer.reason:
-            print(f"  reason: {answer.reason}")
-    else:
-        print(answer.answer)
+            print(f" {answer.reason}", end="")
+        print()
 
     print(f"\n  confidence: {answer.confidence:.2f}")
     if answer.citations:
         print("  citations:")
-        for c in answer.citations:
-            snip = f" — {c.snippet}" if c.snippet else ""
-            print(f"    - {c.source_file} ({c.locator}){snip}")
+        for citation in answer.citations:
+            snippet = f" \u2014 {citation.snippet}" if citation.snippet else ""
+            print(f"    - {citation.source_file} ({citation.locator}){snippet}")
     if answer.sql_used:
         print(f"  sql: {answer.sql_used}")
 
 
-def _run_turn(agent, text: str, config: dict) -> AgentAnswer | None:
-    final = None
-    printed = 0
-    for chunk in agent.stream(
-        {"messages": [{"role": "user", "content": text}]},
-        config=config,
-        stream_mode="values",
-    ):
-        final = chunk
-        messages = chunk.get("messages", [])
-        for message in messages[printed:]:
-            _print_progress(message)
-        printed = len(messages)
+def _run_turn(question: str, history: list[Message], agent) -> AgentAnswer | None:
+    """Stream one turn to the terminal and return the structured answer."""
+    answer: AgentAnswer | None = None
+    streaming = False
 
-    if final is None:
-        return None
-    return final.get("structured_response")
+    for event in run_agent(question, history=history, agent=agent):
+        if event.type == "tool_call":
+            print(f"  \u2192 {event.name}: {_preview(event.args)}")
+        elif event.type == "tool_result":
+            state = "" if event.ok else "error: "
+            print(f"  \u2190 {event.name} returned ({state}{event.summary})")
+        elif event.type == "token":
+            if not streaming:
+                print()
+                streaming = True
+            print(event.text, end="", flush=True)
+        elif event.type == "answer":
+            answer = event.answer
+        elif event.type == "error":
+            print(f"\n[error] {event.message}")
+
+    if streaming:
+        print()
+    return answer
 
 
-def _new_config() -> dict:
-    return {"configurable": {"thread_id": str(uuid4())}}
+def _dialogue(question: str, answer: AgentAnswer | None) -> list[Message]:
+    """The turn as history for the next question."""
+    if answer is None:
+        return []
+    return [
+        {"role": "user", "content": question},
+        {"role": "assistant", "content": answer.answer},
+    ]
 
 
 def run_smoke() -> int:
@@ -90,8 +90,9 @@ def run_smoke() -> int:
     ok = True
     for i, question in enumerate(SMOKE_QUESTIONS, start=1):
         print(f"\n{'=' * 70}\n[{i}] {question}\n{'=' * 70}")
-        answer = _run_turn(agent, question, _new_config())
-        _render(answer)
+        answer = _run_turn(question, [], agent)
+        if answer is not None:
+            _render_metadata(answer)
         if answer is None or (answer.abstained and answer.confidence < 0.3):
             ok = False
     print(f"\n{'=' * 70}\nSmoke test: {'PASS' if ok else 'CHECK OUTPUT'}")
@@ -99,16 +100,18 @@ def run_smoke() -> int:
 
 
 def run_once(question: str) -> int:
-    agent = build_agent()
-    answer = _run_turn(agent, question, _new_config())
-    _render(answer)
+    answer = _run_turn(question, [], build_agent())
+    if answer is not None:
+        _render_metadata(answer)
     return 0
 
 
 def run_interactive() -> int:
     agent = build_agent()
-    config = _new_config()  # one thread for the whole session (multi-turn memory)
-    print("Accounting Research Assistant (Phase 1). Type 'exit' to quit.\n")
+    # The caller owns the conversation, mirroring how the web layer will pass
+    # history loaded from Postgres once threads are persisted.
+    history: list[Message] = []
+    print("Accounting Research Assistant. Type 'exit' to quit.\n")
     while True:
         try:
             question = input("you> ").strip()
@@ -119,8 +122,10 @@ def run_interactive() -> int:
             continue
         if question.lower() in {"exit", "quit"}:
             break
-        answer = _run_turn(agent, question, config)
-        _render(answer)
+        answer = _run_turn(question, history, agent)
+        if answer is not None:
+            _render_metadata(answer)
+        history.extend(_dialogue(question, answer))
         print()
     return 0
 
