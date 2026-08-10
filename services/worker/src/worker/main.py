@@ -1,8 +1,4 @@
-"""Worker entry point.
-
-Phase 0 scope: prove the process starts, reaches Redis, and shuts down cleanly.
-Job consumption (executing agent runs and publishing their events) lands in
-Phase 1, where this idle loop is replaced by a real queue consumer.
+"""Worker entry point: consume queued runs and execute them.
 
 Run:  ar-worker   (or: python -m worker.main)
 """
@@ -15,13 +11,16 @@ import threading
 import time
 
 import redis
+import run_bus
+from rq import Queue, SimpleWorker
 
 from . import __version__
 from .settings import get_worker_settings
 
 logger = logging.getLogger("worker")
 
-# Set when a shutdown signal arrives; also used as an interruptible sleep.
+# Set when a shutdown signal arrives during startup; also an interruptible sleep.
+# Once RQ takes over it installs its own handlers for warm shutdown.
 _shutdown = threading.Event()
 
 
@@ -33,10 +32,10 @@ def _configure_logging() -> None:
 
 
 def _install_signal_handlers() -> None:
-    """Translate termination signals into a cooperative shutdown.
+    """Make the Redis connect loop interruptible.
 
-    Containers are stopped with SIGTERM; handling it lets an in-flight job
-    finish instead of being killed mid-run.
+    Containers are stopped with SIGTERM. RQ replaces these handlers when it
+    starts working, so an in-flight job finishes before the worker exits.
     """
 
     def handle(signum, _frame) -> None:
@@ -49,9 +48,7 @@ def _install_signal_handlers() -> None:
 
 def connect_to_redis(url: str, timeout: float) -> redis.Redis:
     """Connect to Redis, retrying briefly so startup order doesn't matter."""
-    client = redis.from_url(
-        url, socket_connect_timeout=timeout, socket_timeout=timeout
-    )
+    client = redis.from_url(url, socket_connect_timeout=timeout, socket_timeout=timeout)
 
     deadline = time.monotonic() + timeout
     attempt = 0
@@ -74,17 +71,23 @@ def main() -> None:
 
     logger.info("worker %s starting (env=%s)", __version__, settings.environment)
 
-    client = connect_to_redis(settings.redis_url, settings.redis_connect_timeout)
+    connection = connect_to_redis(settings.redis_url, settings.redis_connect_timeout)
     logger.info("connected to redis at %s", settings.redis_url)
-    logger.info("no queue consumer yet (Phase 1); idling")
+
+    queue = Queue(run_bus.QUEUE_NAME, connection=connection)
+
+    # SimpleWorker executes jobs in this process instead of forking one child per
+    # job. That keeps the built agent warm across runs, which matters for the
+    # latency budget, and avoids the fork restrictions that make forking workers
+    # unreliable on macOS. The cost is no per-job process isolation; revisit if a
+    # run is ever able to corrupt process state.
+    worker = SimpleWorker([queue], connection=connection)
+    logger.info("consuming queue %r", run_bus.QUEUE_NAME)
 
     try:
-        while not _shutdown.is_set():
-            _shutdown.wait(settings.heartbeat_interval)
-            if not _shutdown.is_set():
-                logger.info("idle heartbeat")
+        worker.work()
     finally:
-        client.close()
+        connection.close()
         logger.info("worker stopped")
 
 

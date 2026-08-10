@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 # the shared environment (the root itself is not a shipped package).
 dependencies = [
     "accounting-research",
+    "run-bus",
     "api",
     "worker",
 ]
@@ -19,5 +20,6 @@ members = ["packages/*", "services/*"]
 
 [tool.uv.sources]
 accounting-research = { workspace = true }
+run-bus = { workspace = true }
 api = { workspace = true }
 worker = { workspace = true }

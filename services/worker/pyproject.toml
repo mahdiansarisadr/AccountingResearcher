@@ -4,10 +4,13 @@ version = "0.1.0"
 description = "Background worker that executes agent runs"
 requires-python = ">=3.11"
 dependencies = [
-    # Workspace cross-link: the worker runs the agent in-process (Phase 1 onward).
+    # Workspace cross-link: the worker runs the agent in-process.
     "accounting-research",
+    # Shared Redis conventions for publishing run events.
+    "run-bus",
     "pydantic-settings>=2.4",
     "redis>=5.0",
+    "rq>=1.16",
 ]
 
 [project.scripts]
@@ -15,6 +18,7 @@ ar-worker = "worker.main:main"
 
 [tool.uv.sources]
 accounting-research = { workspace = true }
+run-bus = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -30,6 +30,13 @@ class ApiSettings(BaseSettings):
     # Seconds a readiness probe waits on a dependency before calling it down.
     probe_timeout: float = 2.0
 
+    # Ceiling on a single run before the queue abandons it. Generous next to the
+    # ~10s target so a slow-but-working run is not killed, while a wedged one is.
+    run_timeout_seconds: int = 120
+
+    # How long a stream waits with no events before telling the client to stop.
+    stream_idle_timeout_seconds: float = 150.0
+
 
 @lru_cache
 def get_api_settings() -> ApiSettings:

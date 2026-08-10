@@ -76,6 +76,71 @@ change. Inside Compose the services reach each other by service name
 (`postgres:5432`, `redis:6379`), which is why `docker-compose.yml` overrides the
 localhost URLs that `.env` uses for host-based runs.
 
+## Running the agent over HTTP
+
+Start a run, then stream it. Starting returns immediately with a `run_id`
+because a run takes seconds, and holding an HTTP request open that long is
+fragile — a refresh or a proxy timeout would lose the work.
+
+```bash
+# 1. Queue a run (202 Accepted)
+curl -X POST localhost:8000/runs -H 'content-type: application/json' \
+     -d '{"message":"Which audit cases have not been audited yet?"}'
+# -> {"run_id":"5e7b5c1a-...","status":"queued"}
+
+# 2. Watch it happen
+curl -N localhost:8000/runs/5e7b5c1a-.../stream
+
+# 3. Ask about it, or stop it
+curl localhost:8000/runs/5e7b5c1a-...
+curl -X POST localhost:8000/runs/5e7b5c1a-.../cancel
+```
+
+The stream is Server-Sent Events. Every record carries the event type, a JSON
+payload, and an id:
+
+```
+event: tool_call
+data: {"seq":1,"type":"tool_call","name":"search_schema","args":{"query":"audit cases not audited"}}
+
+event: token
+data: {"seq":5,"type":"token","text":"The"}
+
+event: done
+data: {"seq":442,"type":"done","run_id":"...","status":"succeeded"}
+```
+
+Event types are defined once in `accounting_research.agent.events` and shared by
+every layer: `run_started`, `tool_call`, `tool_result`, `token`, `answer`,
+`error`, `done`. A run always ends with exactly one `done`, so a client can
+close on it without special-casing failures.
+
+### How a run travels
+
+```
+POST /runs ──▶ API enqueues on Redis (RQ) ──▶ worker picks it up
+                                                    │
+                                          run_agent() yields events
+                                                    │
+                              worker appends each to a Redis Stream
+                                                    │
+GET /runs/{id}/stream ◀── API reads that stream ◀────┘
+```
+
+Events go through a Redis **Stream**, not pub/sub. Pub/sub only reaches whoever
+is connected at that instant, and a client necessarily connects *after* starting
+a run, so early events would be lost every time. A stream is an append-only log:
+a late client replays from the beginning, and a dropped connection resumes from
+where it left off via the `Last-Event-ID` header.
+
+Cancellation is cooperative. `POST /cancel` sets a Redis flag; the running job
+notices between events and stops at a clean boundary, reporting `cancelled`
+rather than being killed mid-query.
+
+One known limit: each open stream occupies a worker thread, because the Redis
+read is blocking. Fine for a single team; moving to `redis.asyncio` is the fix
+when it isn't.
+
 ## Database migrations
 
 Two kinds of tables live in this database, and they are managed differently.
@@ -146,18 +211,25 @@ test_database_resources/         Demo/test database bootstrap (seed-time only)
   schema.sql                     Seed table DDL
   catalog.sql                    schema_catalog DDL
   tables.yaml                    Authored table/column descriptions (feeds the catalog)
+packages/run_bus/src/run_bus/    Redis transport shared by api + worker
+  keys.py                        Queue name, stream/flag key naming, TTLs
+  bus.py                         Publish, read (blocking), cancel, status
 services/api/                    HTTP API (FastAPI)
   Dockerfile                     Built from the repo root; installs --package api
   alembic.ini                    Migration config (URL comes from the environment)
   migrations/env.py              Wires Alembic to DATABASE_URL via api.settings
-  migrations/versions/           Migration files (empty until Phase 1)
+  migrations/versions/           Migration files (empty until threads land)
   src/api/main.py                App factory
   src/api/settings.py            API settings from .env
+  src/api/deps.py                Shared Redis connection + RQ queue
   src/api/checks.py              Postgres + Redis readiness probes
+  src/api/sse.py                 Server-Sent Events framing
   src/api/routers/health.py      /health (liveness), /ready (readiness)
+  src/api/routers/runs.py        Start, stream, cancel, status
 services/worker/                 Background worker
   Dockerfile                     Built from the repo root; installs --package worker
-  src/worker/main.py             Startup retry, idle loop, graceful shutdown
+  src/worker/main.py             RQ consumer: startup retry, warm shutdown
+  src/worker/tasks.py            The job: run the agent, publish its events
   src/worker/settings.py         Worker settings from .env
 packages/accounting_research/src/accounting_research/
   core/
@@ -170,6 +242,8 @@ packages/accounting_research/src/accounting_research/
     search.py                    Hybrid table selection (pgvector + FTS + RRF)
   agent/
     schemas.py                   Structured output (answer/confidence/citations)
+    events.py                    Run event contract shared by every layer
+    runner.py                    run_agent(): the single execution path
     builder.py                   create_agent assembly + middleware
     prompts/system.md            System prompt content (behavioral contract)
     prompts/__init__.py          Prompt loader

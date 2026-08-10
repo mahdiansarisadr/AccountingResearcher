@@ -48,7 +48,7 @@ sync:
 # Fails loudly if editable installs are not importable, which is the symptom
 # every environment problem in this project has surfaced as.
 doctor:
-	@$(PY) -c "import accounting_research, api, worker; print('env OK:', '$(VENV)')"
+	@$(PY) -c "import accounting_research, run_bus, api, worker; print('env OK:', '$(VENV)')"
 
 clean-venv:
 	rm -rf $(VENV)

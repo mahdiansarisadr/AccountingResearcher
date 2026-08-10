@@ -11,12 +11,16 @@ dependencies = [
     "pydantic-settings>=2.4",
     "psycopg[binary]>=3.2",
     "redis>=5.0",
+    # Shared Redis conventions for enqueuing runs and reading their events.
+    "run-bus",
+    "rq>=1.16",
     # The API owns the application schema, so it owns the migrations.
     "alembic>=1.13",
 ]
 
 [tool.uv.sources]
 accounting-research = { workspace = true }
+run-bus = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

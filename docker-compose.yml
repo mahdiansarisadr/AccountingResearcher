@@ -68,6 +68,7 @@ services:
       # virtualenv lives at /opt/venv in the image and stays untouched.
       - ./services/api/src:/app/services/api/src:ro
       - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./packages/run_bus/src:/app/packages/run_bus/src:ro
       - ./test_database_resources:/app/test_database_resources:ro
       # Mounted so a revision written on the host is visible to `make
       # stack-migrate` without rebuilding the image.
@@ -105,6 +106,7 @@ services:
     volumes:
       - ./services/worker/src:/app/services/worker/src:ro
       - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./packages/run_bus/src:/app/packages/run_bus/src:ro
       - ./test_database_resources:/app/test_database_resources:ro
     # The worker handles SIGTERM, so give it room to drain instead of the
     # default 10s before Docker escalates to SIGKILL.

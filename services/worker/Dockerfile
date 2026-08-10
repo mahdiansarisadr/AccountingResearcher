@@ -20,12 +20,14 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 COPY packages/accounting_research/pyproject.toml packages/accounting_research/
+COPY packages/run_bus/pyproject.toml packages/run_bus/
 COPY services/api/pyproject.toml services/api/
 COPY services/worker/pyproject.toml services/worker/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-workspace --package worker
 
 COPY packages/accounting_research packages/accounting_research
+COPY packages/run_bus packages/run_bus
 COPY services/worker services/worker
 COPY test_database_resources test_database_resources
 RUN --mount=type=cache,target=/root/.cache/uv \
