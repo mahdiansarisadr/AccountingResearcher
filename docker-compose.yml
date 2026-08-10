@@ -69,6 +69,9 @@ services:
       - ./services/api/src:/app/services/api/src:ro
       - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
       - ./test_database_resources:/app/test_database_resources:ro
+      # Mounted so a revision written on the host is visible to `make
+      # stack-migrate` without rebuilding the image.
+      - ./services/api/migrations:/app/services/api/migrations:ro
     command:
       - uvicorn
       - api.main:app

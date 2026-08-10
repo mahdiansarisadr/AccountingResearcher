@@ -76,6 +76,37 @@ change. Inside Compose the services reach each other by service name
 (`postgres:5432`, `redis:6379`), which is why `docker-compose.yml` overrides the
 localhost URLs that `.env` uses for host-based runs.
 
+## Database migrations
+
+Two kinds of tables live in this database, and they are managed differently.
+
+The **demo accounting tables** (`expenses`, `invoices`, …) are disposable
+fixtures. They come from `test_database_resources/*.sql` and are rebuilt from
+scratch by `make seed`. Dropping and recreating them is the normal workflow.
+
+The **application tables** (chat runs, messages, and whatever follows) hold real
+state, so they get versioned migrations via Alembic. Each change is a numbered
+file, Postgres records which files it has applied in `alembic_version`, and
+`make migrate` applies whatever is missing — so an existing database can move
+forward without being wiped.
+
+```bash
+make migration name="add runs table"   # create a revision, then edit it
+make migrate                           # apply everything pending
+make migrate-down                      # revert the last one
+make migrate-status                    # current revision + full history
+make stack-migrate                     # apply from inside the api container
+```
+
+Migrations are hand-written: there are no ORM models, so `--autogenerate` has
+nothing to compare against. `DATABASE_URL` is read by `migrations/env.py` from
+`api.settings`, so migrations always target the same database the service uses
+and no credentials sit in `alembic.ini`.
+
+Applying migrations is always an explicit step, never something the API does on
+startup — with more than one instance running, concurrent boots would race each
+other on the same schema change.
+
 ## Environment notes
 
 The virtualenv lives at `~/.venvs/accounting-research`, **outside** this
@@ -117,6 +148,9 @@ test_database_resources/         Demo/test database bootstrap (seed-time only)
   tables.yaml                    Authored table/column descriptions (feeds the catalog)
 services/api/                    HTTP API (FastAPI)
   Dockerfile                     Built from the repo root; installs --package api
+  alembic.ini                    Migration config (URL comes from the environment)
+  migrations/env.py              Wires Alembic to DATABASE_URL via api.settings
+  migrations/versions/           Migration files (empty until Phase 1)
   src/api/main.py                App factory
   src/api/settings.py            API settings from .env
   src/api/checks.py              Postgres + Redis readiness probes

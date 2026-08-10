@@ -1,0 +1,24 @@
+Migrations for the application schema (runs, messages, and whatever follows).
+
+Not for the demo accounting data. Those tables come from
+test_database_resources/*.sql, which the Postgres container runs once on first
+start and which `ar-seed` rebuilds on demand. They are disposable fixtures; the
+tables defined here hold real state and therefore need versioned, reversible
+changes.
+
+Conventions
+  - One migration per logical change, with a working downgrade(). A migration
+    you cannot reverse is a migration you cannot deploy on a Friday.
+  - Migrations are hand-written: there are no ORM models, so
+    `--autogenerate` has nothing to diff. Write the ops explicitly.
+  - Never edit a migration that has been applied anywhere but your own
+    machine. Add a new one instead.
+
+Usage (from the repo root)
+  make migration name="add runs table"   create a new revision
+  make migrate                           apply everything pending
+  make migrate-down                      revert the last one
+  make migrate-status                    show current revision + history
+
+The database URL comes from DATABASE_URL via api.settings, not from
+alembic.ini. See env.py.

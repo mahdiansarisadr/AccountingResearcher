@@ -10,8 +10,11 @@ VENV ?= $(HOME)/.venvs/accounting-research
 UV := UV_PROJECT_ENVIRONMENT=$(VENV) uv
 PY := $(VENV)/bin/python
 
+ALEMBIC := $(UV) run --no-sync alembic -c services/api/alembic.ini
+
 .PHONY: help sync up down ps logs seed catalog chat api worker health doctor \
-        clean-venv build stack stack-down stack-logs
+        clean-venv build stack stack-down stack-logs stack-migrate \
+        migrate migrate-down migrate-status migration
 
 help:
 	@echo "Environment"
@@ -27,6 +30,11 @@ help:
 	@echo "Data"
 	@echo "  make seed        Load synthetic accounting data"
 	@echo "  make catalog     Build the schema catalog used for table selection"
+	@echo "Migrations (application schema)"
+	@echo "  make migrate         Apply pending migrations"
+	@echo "  make migrate-down    Revert the last migration"
+	@echo "  make migrate-status  Show current revision and history"
+	@echo '  make migration name="add runs table"   Create a new revision'
 	@echo "Run"
 	@echo "  make api         Serve the HTTP API with reload"
 	@echo "  make worker      Run the background worker"
@@ -70,6 +78,25 @@ stack-down:
 
 stack-logs:
 	docker compose --profile apps logs -f api worker
+
+# Migrations are a deliberate step, never something the app runs on startup:
+# with more than one replica, concurrent startups would race on the same DDL.
+stack-migrate:
+	docker compose --profile apps run --rm api alembic -c /app/services/api/alembic.ini upgrade head
+
+migrate:
+	$(ALEMBIC) upgrade head
+
+migrate-down:
+	$(ALEMBIC) downgrade -1
+
+migrate-status:
+	$(ALEMBIC) current --verbose
+	$(ALEMBIC) history
+
+migration:
+	@test -n "$(name)" || { echo 'usage: make migration name="add runs table"'; exit 1; }
+	$(ALEMBIC) revision -m "$(name)"
 
 seed:
 	$(UV) run --no-sync ar-seed

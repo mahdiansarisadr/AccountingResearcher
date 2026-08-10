@@ -11,6 +11,8 @@ dependencies = [
     "pydantic-settings>=2.4",
     "psycopg[binary]>=3.2",
     "redis>=5.0",
+    # The API owns the application schema, so it owns the migrations.
+    "alembic>=1.13",
 ]
 
 [tool.uv.sources]
