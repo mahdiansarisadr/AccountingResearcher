@@ -33,6 +33,80 @@ services:
       timeout: 3s
       retries: 20
 
+  # api and worker sit behind the "apps" profile so plain `docker compose up -d`
+  # starts infrastructure only. That keeps the common workflow — services run on
+  # the host against containerized Postgres/Redis — free of port conflicts.
+  # Start everything with: docker compose --profile apps up -d
+  api:
+    profiles: ["apps"]
+    build:
+      # Repo root: a workspace member needs uv.lock and its sibling packages.
+      context: .
+      dockerfile: services/api/Dockerfile
+    container_name: ar_api
+    # env_file supplies OPENAI_API_KEY, LANGSMITH_*, and the AR_* agent settings.
+    # environment wins over env_file, so the host-facing localhost URLs in .env
+    # are replaced here by compose service hostnames on the internal network.
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
+      REDIS_URL: redis://redis:6379/0
+      AR_DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
+      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/accounting
+      AR_DB_RESOURCES_DIR: /app/test_database_resources
+    ports:
+      - "8000:8000"
+    depends_on:
+      # service_healthy, not service_started: wait until the dependency actually
+      # accepts connections, otherwise the app races the database on boot.
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Dev bind-mounts for live reload. Only source trees are mounted; the
+      # virtualenv lives at /opt/venv in the image and stays untouched.
+      - ./services/api/src:/app/services/api/src:ro
+      - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./test_database_resources:/app/test_database_resources:ro
+    command:
+      - uvicorn
+      - api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/services/api/src
+      - --reload-dir
+      - /app/packages/accounting_research/src
+
+  worker:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    container_name: ar_worker
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      AR_DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
+      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/accounting
+      AR_DB_RESOURCES_DIR: /app/test_database_resources
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/worker/src:/app/services/worker/src:ro
+      - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./test_database_resources:/app/test_database_resources:ro
+    # The worker handles SIGTERM, so give it room to drain instead of the
+    # default 10s before Docker escalates to SIGKILL.
+    stop_grace_period: 30s
+
 volumes:
   ar_pgdata:
   ar_redisdata:

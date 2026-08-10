@@ -57,6 +57,25 @@ uv run --no-sync ar-chat --ask "..."     # one-shot question
 uv run --no-sync ar-chat --smoke         # run the 3 core question types end-to-end
 ```
 
+### Running everything in containers
+
+The default `make up` starts Postgres and Redis only, leaving you to run the API
+and worker on the host. To run the whole stack in Docker instead:
+
+```bash
+make build       # build the api and worker images
+make stack       # start postgres, redis, api, worker
+make stack-logs  # follow api + worker output
+make stack-down  # stop it all
+```
+
+`api` and `worker` live behind a Compose `apps` profile, which is why they are
+excluded from plain `docker compose up`. Both mount their source read-only from
+the host, so edits reload live without a rebuild; rebuild only when dependencies
+change. Inside Compose the services reach each other by service name
+(`postgres:5432`, `redis:6379`), which is why `docker-compose.yml` overrides the
+localhost URLs that `.env` uses for host-based runs.
+
 ## Environment notes
 
 The virtualenv lives at `~/.venvs/accounting-research`, **outside** this
@@ -89,20 +108,23 @@ A `uv` workspace: one lockfile and one virtualenv shared by several members.
 ```
 Makefile                         Developer entry points (make help)
 pyproject.toml                   Workspace root (members + shared dev deps)
-docker-compose.yml               Postgres + pgvector, Redis
+docker-compose.yml               Postgres + pgvector, Redis, api + worker (apps profile)
+.dockerignore                    Build-context exclusions (shared by both images)
 test_database_resources/         Demo/test database bootstrap (seed-time only)
   init.sql                       Extension + read-only agent role
   schema.sql                     Seed table DDL
   catalog.sql                    schema_catalog DDL
   tables.yaml                    Authored table/column descriptions (feeds the catalog)
-services/api/src/api/            HTTP API (FastAPI)
-  main.py                        App factory
-  settings.py                    API settings from .env
-  checks.py                      Postgres + Redis readiness probes
-  routers/health.py              /health (liveness), /ready (readiness)
-services/worker/src/worker/      Background worker
-  main.py                        Startup retry, idle loop, graceful shutdown
-  settings.py                    Worker settings from .env
+services/api/                    HTTP API (FastAPI)
+  Dockerfile                     Built from the repo root; installs --package api
+  src/api/main.py                App factory
+  src/api/settings.py            API settings from .env
+  src/api/checks.py              Postgres + Redis readiness probes
+  src/api/routers/health.py      /health (liveness), /ready (readiness)
+services/worker/                 Background worker
+  Dockerfile                     Built from the repo root; installs --package worker
+  src/worker/main.py             Startup retry, idle loop, graceful shutdown
+  src/worker/settings.py         Worker settings from .env
 packages/accounting_research/src/accounting_research/
   core/
     settings.py                  Settings from .env

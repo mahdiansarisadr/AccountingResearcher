@@ -10,7 +10,8 @@ VENV ?= $(HOME)/.venvs/accounting-research
 UV := UV_PROJECT_ENVIRONMENT=$(VENV) uv
 PY := $(VENV)/bin/python
 
-.PHONY: help sync up down ps logs seed catalog chat api worker health doctor clean-venv
+.PHONY: help sync up down ps logs seed catalog chat api worker health doctor \
+        clean-venv build stack stack-down stack-logs
 
 help:
 	@echo "Environment"
@@ -19,6 +20,10 @@ help:
 	@echo "  make clean-venv  Delete the virtualenv"
 	@echo "Infrastructure"
 	@echo "  make up / down / ps / logs   Postgres + Redis via docker compose"
+	@echo "  make build       Build the api and worker images"
+	@echo "  make stack       Run everything in containers (adds api + worker)"
+	@echo "  make stack-down  Stop the full stack"
+	@echo "  make stack-logs  Follow api + worker logs"
 	@echo "Data"
 	@echo "  make seed        Load synthetic accounting data"
 	@echo "  make catalog     Build the schema catalog used for table selection"
@@ -51,6 +56,20 @@ ps:
 
 logs:
 	docker compose logs -f
+
+# The "apps" profile adds the containerized api + worker on top of the
+# infrastructure services; without it compose starts Postgres + Redis only.
+build:
+	docker compose --profile apps build
+
+stack:
+	docker compose --profile apps up -d
+
+stack-down:
+	docker compose --profile apps down
+
+stack-logs:
+	docker compose --profile apps logs -f api worker
 
 seed:
 	$(UV) run --no-sync ar-seed

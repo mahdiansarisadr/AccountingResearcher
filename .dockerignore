@@ -1,0 +1,24 @@
+# Keep the build context small and free of host-specific or secret material.
+# Everything here is either rebuilt in the image, injected at runtime, or noise.
+
+.git
+.gitignore
+
+# Host virtualenvs never belong in an image (wrong platform, wrong paths).
+.venv
+**/.venv
+
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Secrets are supplied at runtime via env_file, never baked into a layer.
+.env
+.env.*
+!.env.example
+
+docs
+README.md
+Makefile
