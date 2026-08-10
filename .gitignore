@@ -8,6 +8,9 @@
 # Env / secrets
 .env
 .env.*
+# The template holds no secrets and must ship, or a fresh clone has nothing to
+# copy from. The .env.* rule above would otherwise swallow it.
+!.env.example
 *.local
 
 # Python
