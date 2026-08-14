@@ -7,9 +7,15 @@ env vars case-insensitively (``database_url`` <- ``DATABASE_URL``).
 
 from __future__ import annotations
 
+import secrets
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Below this a signing key is not worth having; joserfc warns under 112 bits and
+# HS256 wants at least as much entropy as its output to be worth the algorithm.
+MIN_SECRET_CHARS = 32
 
 
 class ApiSettings(BaseSettings):
@@ -36,6 +42,92 @@ class ApiSettings(BaseSettings):
 
     # How long a stream waits with no events before telling the client to stop.
     stream_idle_timeout_seconds: float = 150.0
+
+    # --- Google sign-in ---
+    # Empty by default so the service still boots (and /health still answers)
+    # without credentials; /auth/login reports itself unavailable instead.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+
+    # Where Google sends the browser back. Must match the redirect URI registered
+    # in the Google Cloud console exactly, including scheme and port.
+    oauth_redirect_url: str = "http://localhost:8000/auth/callback"
+
+    # The single company domain allowed to sign in. Every other verified Google
+    # account is refused, which is the whole access control model for this tool.
+    allowed_email_domain: str = ""
+
+    # Seeded manually, because the first admin cannot be appointed by an admin.
+    # This account is also kept active and admin on every login, so an instance
+    # cannot be locked out of its own user management.
+    initial_admin_email: str = ""
+
+    # --- Session ---
+    session_cookie_name: str = "ar_session"
+    session_ttl_seconds: int = 7 * 24 * 60 * 60
+
+    # Signs the session cookie. Deliberately has no default: a committed
+    # fallback is a published private key. In development an ephemeral one is
+    # generated per process, which costs a re-login after every restart and
+    # nothing else. Production refuses to start without it.
+    session_secret: str = ""
+
+    # Where the browser lands after a successful sign-in. Points at the frontend
+    # once there is one.
+    post_login_redirect: str = "/me"
+
+    # --- Development sign-in ---
+    # Issues a session for any allowed-domain email without contacting Google,
+    # so the API and the frontend can be worked on before OAuth credentials
+    # exist. Refuses to run outside development, enforced below.
+    dev_login_enabled: bool = False
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() == "production"
+
+    @property
+    def cookies_require_https(self) -> bool:
+        """Whether to mark cookies Secure.
+
+        Off in development because localhost is plain HTTP and a Secure cookie
+        would simply never be sent back.
+        """
+        return self.is_production
+
+    @property
+    def sign_in_configured(self) -> bool:
+        return bool(
+            self.google_client_id and self.google_client_secret and self.allowed_email_domain
+        )
+
+    @model_validator(mode="after")
+    def _validate_secrets(self) -> ApiSettings:
+        if self.is_production:
+            if not self.session_secret:
+                raise ValueError(
+                    "SESSION_SECRET is required in production; generate one with"
+                    " `python -c 'import secrets; print(secrets.token_urlsafe(48))'`"
+                )
+            if self.dev_login_enabled:
+                # A backdoor that mints sessions for arbitrary addresses. Failing
+                # to boot is the only reaction to this that cannot be ignored.
+                raise ValueError("DEV_LOGIN_ENABLED must be off in production")
+            if not self.allowed_email_domain:
+                raise ValueError("ALLOWED_EMAIL_DOMAIN is required in production")
+
+        if self.session_secret and len(self.session_secret) < MIN_SECRET_CHARS:
+            raise ValueError(f"SESSION_SECRET must be at least {MIN_SECRET_CHARS} characters")
+
+        if not self.session_secret:
+            self.session_secret = secrets.token_urlsafe(48)
+
+        return self
+
+    @property
+    def normalized_domain(self) -> str:
+        """The allowed domain, comparable against the tail of an email address."""
+        return self.allowed_email_domain.strip().lower().lstrip("@")
 
 
 @lru_cache

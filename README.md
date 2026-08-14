@@ -37,9 +37,15 @@ make seed
 # 5. Build the schema catalog (embeddings + full-text index for table selection)
 make catalog
 
-# 6. Chat
+# 6. Create the application tables (users, run records)
+make migrate
+
+# 7. Chat
 make chat
 ```
+
+The CLI needs none of the sign-in configuration below; it talks to the agent
+directly. Fill that in when you want to use the HTTP API.
 
 ## Usage
 
@@ -48,6 +54,8 @@ make chat        # interactive chat REPL
 make api         # HTTP API on :8000 with reload
 make worker      # background worker
 make health      # curl /health and /ready
+make migrate     # apply pending migrations (run once before the API)
+make test        # run the test suite
 ```
 
 For flags the Makefile does not wrap, call the console scripts directly:
@@ -76,25 +84,92 @@ change. Inside Compose the services reach each other by service name
 (`postgres:5432`, `redis:6379`), which is why `docker-compose.yml` overrides the
 localhost URLs that `.env` uses for host-based runs.
 
+## Signing in
+
+Every route that touches data requires a session. The exceptions are the sign-in
+routes, `/health` and `/ready` (a probe cannot authenticate), and FastAPI's
+`/docs`, `/redoc` and `/openapi.json`, which describe the API's shape but expose
+none of its contents — worth closing in production as part of Phase 5 hardening.
+
+Access is granted by one rule: a verified Google account on
+the company domain. There is no invitation step and no password — anyone on the
+domain who signs in gets an account as a **member** on first arrival, and every
+other account is refused.
+
+```
+GET  /auth/login     ──▶ redirect to Google
+GET  /auth/callback  ◀── Google returns; account created or found, cookie issued
+GET  /me                 who am I, and what may I do
+POST /auth/logout        drop the cookie
+GET  /admin/users        every user                  (admin only)
+PATCH /admin/users/{id}  set role or revoke access   (admin only)
+```
+
+Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL_DOMAIN`,
+`INITIAL_ADMIN_EMAIL` and `SESSION_SECRET` (see `.env.example`), and register
+`OAUTH_REDIRECT_URL` on the OAuth client in the Google Cloud console — it must
+match verbatim, port included.
+
+The **first admin** is seeded from `INITIAL_ADMIN_EMAIL`, because an admin cannot
+be appointed by an admin when there are none. That address is also restored to an
+active admin on every sign-in, and an admin cannot demote or deactivate
+themselves, so an instance cannot end up locked out of its own user management.
+Another admin still can, so neither rule makes anyone permanent.
+
+The session is a signed JWT in an **HttpOnly** cookie, valid for a week. It
+carries an identity and nothing else: role and active status are read from the
+database on every request, so revoking access or changing a role takes effect on
+the next request rather than whenever a week-old cookie expires. Signed, not
+encrypted — none of it is secret, and the signature is what stops it being
+edited.
+
+### Before you have Google credentials
+
+There is a development sign-in that issues the same cookie without contacting
+Google, so the API and the frontend can be worked on first. It is off unless
+`DEV_LOGIN_ENABLED=true`, it still enforces the domain rule, and setting it in
+production stops the API from starting at all — a route that mints sessions for
+arbitrary addresses must not be one env var away from being reachable.
+
+```bash
+curl -c cookies.txt -X POST localhost:8000/auth/dev-login \
+     -H 'content-type: application/json' -d '{"email":"you@your-company.com"}'
+```
+
 ## Running the agent over HTTP
 
 Start a run, then stream it. Starting returns immediately with a `run_id`
 because a run takes seconds, and holding an HTTP request open that long is
 fragile — a refresh or a proxy timeout would lose the work.
 
+Every call carries the session cookie; `-b cookies.txt` below is the jar written
+by signing in above.
+
 ```bash
 # 1. Queue a run (202 Accepted)
-curl -X POST localhost:8000/runs -H 'content-type: application/json' \
+curl -b cookies.txt -X POST localhost:8000/runs -H 'content-type: application/json' \
      -d '{"message":"Which audit cases have not been audited yet?"}'
-# -> {"run_id":"5e7b5c1a-...","status":"queued"}
+# -> {"run_id":"5e7b5c1a-...","status":"queued","error":null,
+#     "created_at":"...","started_at":null,"finished_at":null}
 
 # 2. Watch it happen
-curl -N localhost:8000/runs/5e7b5c1a-.../stream
+curl -b cookies.txt -N localhost:8000/runs/5e7b5c1a-.../stream
 
 # 3. Ask about it, or stop it
-curl localhost:8000/runs/5e7b5c1a-...
-curl -X POST localhost:8000/runs/5e7b5c1a-.../cancel
+curl -b cookies.txt localhost:8000/runs/5e7b5c1a-...
+curl -b cookies.txt -X POST localhost:8000/runs/5e7b5c1a-.../cancel
 ```
+
+A run belongs to whoever started it. Someone else's run id is worth nothing:
+ownership is part of the query rather than a check on the result, so another
+user's run is reported as `404` — confirming that an id exists but belongs to
+someone else would itself be a disclosure.
+
+Asking about a run reads the `app.runs` table, so the answer survives a restart
+and outlives the hour its event log spends in Redis. The timestamps are there to
+be subtracted: `started_at - created_at` is how long the run waited for a
+worker, `finished_at - started_at` is how long it took. Cancelling a run that
+has already finished is a `409`, not a silent no-op.
 
 The stream is Server-Sent Events. Every record carries the event type, a JSON
 payload, and an id:
@@ -118,24 +193,44 @@ close on it without special-casing failures.
 ### How a run travels
 
 ```
-POST /runs ──▶ API enqueues on Redis (RQ) ──▶ worker picks it up
-                                                    │
-                                          run_agent() yields events
-                                                    │
-                              worker appends each to a Redis Stream
-                                                    │
-GET /runs/{id}/stream ◀── API reads that stream ◀────┘
+POST /runs ──▶ API writes a queued row to app.runs (and commits)
+                          │
+                          └──▶ enqueues on Redis (RQ) ──▶ worker picks it up
+                                                              │
+                                            marks the row running, then
+                                            run_agent() yields events
+                                                              │
+                                    worker appends each to a Redis Stream
+                                    and records the outcome on the row
+                                                              │
+GET /runs/{id}/stream ◀── API reads that stream ◀──────────────┘
+GET /runs/{id}        ◀── API reads app.runs
 ```
+
+Two stores, two jobs. **Redis** carries the run while it is happening;
+**Postgres** records what became of it. The row is committed *before* the job is
+enqueued, because a worker can claim it within milliseconds and its first act is
+to look the run up by id.
 
 Events go through a Redis **Stream**, not pub/sub. Pub/sub only reaches whoever
 is connected at that instant, and a client necessarily connects *after* starting
 a run, so early events would be lost every time. A stream is an append-only log:
 a late client replays from the beginning, and a dropped connection resumes from
-where it left off via the `Last-Event-ID` header.
+where it left off via the `Last-Event-ID` header. Once the log has expired,
+streaming a finished run returns a single `done` event rebuilt from its row —
+better than holding the connection open until the idle timeout to conclude the
+same thing.
 
 Cancellation is cooperative. `POST /cancel` sets a Redis flag; the running job
 notices between events and stops at a clean boundary, reporting `cancelled`
-rather than being killed mid-query.
+rather than being killed mid-query. A run cancelled while it was still queued is
+never executed at all, but still gets a terminating event, because a client may
+already be streaming it.
+
+The lifecycle transitions are guarded rather than blind writes: a run only moves
+from `queued` to `running`, and only settles once. That is what makes a
+redelivered job harmless and stops a crash handler on the way out from
+overwriting a deliberate `cancelled` with `failed`.
 
 One known limit: each open stream occupies a worker thread, because the Redis
 read is blocking. Fine for a single team; moving to `redis.asyncio` is the fix
@@ -149,28 +244,75 @@ The **demo accounting tables** (`expenses`, `invoices`, …) are disposable
 fixtures. They come from `test_database_resources/*.sql` and are rebuilt from
 scratch by `make seed`. Dropping and recreating them is the normal workflow.
 
-The **application tables** (chat runs, messages, and whatever follows) hold real
-state, so they get versioned migrations via Alembic. Each change is a numbered
-file, Postgres records which files it has applied in `alembic_version`, and
-`make migrate` applies whatever is missing — so an existing database can move
-forward without being wiped.
+The **application tables** (users and run records now; threads and messages as
+they arrive) hold real state, so they get versioned migrations via Alembic. Each
+change is a numbered file, Postgres records which files it has applied in
+`alembic_version`, and `make migrate` applies whatever is missing — so an
+existing database can move forward without being wiped.
 
 ```bash
-make migration name="add runs table"   # create a revision, then edit it
+make migration name="add users table"  # autogenerate a revision, then review it
 make migrate                           # apply everything pending
 make migrate-down                      # revert the last one
 make migrate-status                    # current revision + full history
+make migrate-check                     # fail if models and database disagree
 make stack-migrate                     # apply from inside the api container
 ```
 
-Migrations are hand-written: there are no ORM models, so `--autogenerate` has
-nothing to compare against. `DATABASE_URL` is read by `migrations/env.py` from
-`api.settings`, so migrations always target the same database the service uses
-and no credentials sit in `alembic.ini`.
+They live in **separate schemas**, and that is a security boundary rather than
+tidiness. The demo tables are in `public`; the application tables are in `app`.
+`ar-seed` finishes with `GRANT SELECT ON ALL TABLES IN SCHEMA public TO
+ar_readonly`, so an application table in `public` would be handed to the agent's
+read-only role on every seed — and now that `app.users` exists, that would mean
+the agent's SQL tool could read every email address in the company, at the
+suggestion of anyone who could get a sentence into a prompt. `ar_readonly` is
+never granted `USAGE` on `app`, so Postgres refuses those queries outright:
+
+```
+accounting=> select count(*) from app.users;
+ERROR:  permission denied for schema app
+```
+
+Revisions are generated from the SQLAlchemy models in `app_db` and then reviewed
+— `--autogenerate` sees shape, not intent. Because both schemas share one
+database, `migrations/env.py` confines autogenerate to `app`; without that filter
+it would compare the demo tables against empty metadata and propose dropping
+every one of them. `make migrate-check` is the inverse guard, failing when a
+model has been edited and no migration written for it.
+
+`DATABASE_URL` is read by `migrations/env.py` from `api.settings`, so migrations
+always target the same database the service uses and no credentials sit in
+`alembic.ini`.
 
 Applying migrations is always an explicit step, never something the API does on
 startup — with more than one instance running, concurrent boots would race each
 other on the same schema change.
+
+## Tests
+
+```bash
+make test
+```
+
+Redis is replaced with an in-process fake, because nothing about the run bus
+depends on it being a real server. Postgres is used for real: the schema carries
+CHECK constraints, a unique email, a foreign key and server-side timestamps, and
+a substitute that did not enforce them would let exactly the bugs these tests
+exist to catch through. Each such test runs inside a transaction that is rolled
+back, so the suite leaves no rows behind — and skips itself, rather than failing,
+when Postgres is not up.
+
+The agent is scripted, never called. `tests/doubles.py` replays the
+`(mode, chunk)` sequence LangGraph produces, so the event contract is tested
+without a model, an API key or a network, and the suite runs in about a second.
+
+Google is never contacted either. The handshake is a single dependency, replaced
+with the claims Google would have returned, and everything downstream of it runs
+for real: requests carry a genuinely signed cookie and the guard verifies it and
+loads the user. That keeps the parts worth being sure about under test — the
+lookalike domains that must be refused, a token edited to name someone else, a
+deactivated account locked out on its very next request, and one user's run id
+being of no use to another.
 
 ## Environment notes
 
@@ -213,18 +355,29 @@ test_database_resources/         Demo/test database bootstrap (seed-time only)
   tables.yaml                    Authored table/column descriptions (feeds the catalog)
 packages/run_bus/src/run_bus/    Redis transport shared by api + worker
   keys.py                        Queue name, stream/flag key naming, TTLs
-  bus.py                         Publish, read (blocking), cancel, status
+  bus.py                         Publish, read (blocking), cancel
+packages/app_db/src/app_db/      Postgres persistence shared by api + worker
+  base.py                        Declarative base; the "app" schema boundary
+  models.py                      Tables: users, runs (threads/messages to come)
+  engine.py                      Engine, session factory, transaction scope
+  runs.py                        Guarded lifecycle transitions; owner-scoped reads
+  users.py                       Accounts, roles, and recorded sign-ins
 services/api/                    HTTP API (FastAPI)
   Dockerfile                     Built from the repo root; installs --package api
   alembic.ini                    Migration config (URL comes from the environment)
-  migrations/env.py              Wires Alembic to DATABASE_URL via api.settings
-  migrations/versions/           Migration files (empty until threads land)
+  migrations/env.py              Wires Alembic to the models and DATABASE_URL
+  migrations/versions/           Migration files, applied in order
   src/api/main.py                App factory
   src/api/settings.py            API settings from .env
-  src/api/deps.py                Shared Redis connection + RQ queue
+  src/api/deps.py                Injectable Redis, queue, DB session; the auth guard
+  src/api/security.py            Issue, verify and clear the session cookie
+  src/api/oauth.py               The Google OAuth client
+  src/api/schemas.py             Response shapes shared by routers
   src/api/checks.py              Postgres + Redis readiness probes
   src/api/sse.py                 Server-Sent Events framing
   src/api/routers/health.py      /health (liveness), /ready (readiness)
+  src/api/routers/auth.py        Sign in, sign out, /me; the domain rule
+  src/api/routers/admin.py       List users, set role, revoke access
   src/api/routers/runs.py        Start, stream, cancel, status
 services/worker/                 Background worker
   Dockerfile                     Built from the repo root; installs --package worker
@@ -254,4 +407,16 @@ packages/accounting_research/src/accounting_research/
   interfaces/
     cli.py                       Chat REPL (ar-chat)
   eval/                          Evaluation harness (Phase 3, stub)
+tests/                           Test suite (make test)
+  conftest.py                    Fake Redis, rolled-back transactions, signed-in clients
+  doubles.py                     Scripted stands-ins for the agent
+  test_runner.py                 The run event contract
+  test_run_bus.py                Publish, replay, resume, cancel
+  test_run_records.py            Guarded lifecycle transitions; run ownership
+  test_user_records.py           Accounts, roles, and returning users
+  test_auth.py                   The domain rule, the cookie, and the guard
+  test_admin.py                  Who may manage users, and what they may not do
+  test_runs_api.py               Accept, report, stream, stop over HTTP
+  test_worker_tasks.py           Events and records agreeing on every path
+  test_sse.py                    Server-Sent Events framing
 ```

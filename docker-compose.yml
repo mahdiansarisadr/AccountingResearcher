@@ -68,6 +68,7 @@ services:
       # virtualenv lives at /opt/venv in the image and stays untouched.
       - ./services/api/src:/app/services/api/src:ro
       - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./packages/app_db/src:/app/packages/app_db/src:ro
       - ./packages/run_bus/src:/app/packages/run_bus/src:ro
       - ./test_database_resources:/app/test_database_resources:ro
       # Mounted so a revision written on the host is visible to `make
@@ -94,6 +95,8 @@ services:
     container_name: ar_worker
     env_file: .env
     environment:
+      # The worker records each run's outcome, so it needs the app schema too.
+      DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
       REDIS_URL: redis://redis:6379/0
       AR_DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
       AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/accounting
@@ -106,6 +109,7 @@ services:
     volumes:
       - ./services/worker/src:/app/services/worker/src:ro
       - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./packages/app_db/src:/app/packages/app_db/src:ro
       - ./packages/run_bus/src:/app/packages/run_bus/src:ro
       - ./test_database_resources:/app/test_database_resources:ro
     # The worker handles SIGTERM, so give it room to drain instead of the

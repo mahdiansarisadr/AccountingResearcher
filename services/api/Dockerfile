@@ -26,6 +26,7 @@ WORKDIR /app
 # installs third-party deps but skips our own members, which arrive below.
 COPY pyproject.toml uv.lock ./
 COPY packages/accounting_research/pyproject.toml packages/accounting_research/
+COPY packages/app_db/pyproject.toml packages/app_db/
 COPY packages/run_bus/pyproject.toml packages/run_bus/
 COPY services/api/pyproject.toml services/api/
 COPY services/worker/pyproject.toml services/worker/
@@ -34,6 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Source layer: changes here rebuild only this step and the one after it.
 COPY packages/accounting_research packages/accounting_research
+COPY packages/app_db packages/app_db
 COPY packages/run_bus packages/run_bus
 COPY services/api services/api
 COPY test_database_resources test_database_resources

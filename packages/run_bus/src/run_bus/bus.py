@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from accounting_research.agent.events import RunEvent, parse_event
 from redis import Redis
 
-from .keys import RUN_TTL_SECONDS, cancel_flag, events_stream, status_key
+from .keys import RUN_TTL_SECONDS, cancel_flag, events_stream
 
 # Redis stream ids are opaque strings; "0" means "from the very beginning".
 START = "0"
@@ -76,6 +76,15 @@ def read_events(
                     return
 
 
+def has_events(redis: Redis, run_id: str) -> bool:
+    """Whether this run's log is still in Redis.
+
+    False once the TTL has passed, which is how a caller tells "nothing has
+    happened yet" apart from "this happened long enough ago to be forgotten".
+    """
+    return bool(redis.exists(events_stream(run_id)))
+
+
 def request_cancel(redis: Redis, run_id: str) -> None:
     """Ask a run to stop. Cooperative: the job notices between events."""
     redis.set(cancel_flag(run_id), "1", ex=RUN_TTL_SECONDS)
@@ -83,14 +92,3 @@ def request_cancel(redis: Redis, run_id: str) -> None:
 
 def cancel_requested(redis: Redis, run_id: str) -> bool:
     return bool(redis.exists(cancel_flag(run_id)))
-
-
-def set_status(redis: Redis, run_id: str, status: str) -> None:
-    redis.set(status_key(run_id), status, ex=RUN_TTL_SECONDS)
-
-
-def get_status(redis: Redis, run_id: str) -> str | None:
-    value = redis.get(status_key(run_id))
-    if value is None:
-        return None
-    return value.decode() if isinstance(value, bytes) else str(value)

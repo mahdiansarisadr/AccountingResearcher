@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from logging.config import fileConfig
 
+import app_db
 from alembic import context
-from sqlalchemy import create_engine, pool
+from sqlalchemy import create_engine, pool, text
+
+# Imported for its side effect of registering the tables on Base.metadata.
+from app_db import models  # noqa: F401
 
 from api.settings import get_api_settings
 
@@ -19,23 +23,36 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# No ORM models yet, so autogenerate has nothing to diff against and migrations
-# are hand-written. Point this at a declarative Base's metadata to enable
-# `alembic revision --autogenerate`.
-target_metadata = None
+target_metadata = app_db.Base.metadata
 
 
 def _database_url() -> str:
-    """Return the app database URL in the form SQLAlchemy needs.
+    return app_db.normalize_url(get_api_settings().database_url)
 
-    A bare ``postgresql://`` URL makes SQLAlchemy reach for psycopg2, which we
-    do not install — this project uses psycopg 3. Naming the driver explicitly
-    keeps one URL in .env usable by both psycopg and SQLAlchemy.
+
+def _include_name(name: str | None, type_: str, _parent_names: dict) -> bool:
+    """Confine autogenerate to the application schema.
+
+    This database also holds the demo accounting tables in ``public``, and those
+    are not described by any model. Without this filter, ``--autogenerate`` would
+    compare them against empty metadata and cheerfully propose dropping every
+    one of them.
     """
-    url = get_api_settings().database_url
-    if url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
-    return url
+    if type_ == "schema":
+        return name == app_db.SCHEMA
+    return True
+
+
+# Shared by both modes: which schema owns the table Alembic stamps, and the
+# filter that keeps autogenerate away from the demo data.
+_CONTEXT_OPTIONS = {
+    "target_metadata": target_metadata,
+    "version_table_schema": app_db.SCHEMA,
+    "include_schemas": True,
+    "include_name": _include_name,
+    # Detect column type changes, which Alembic ignores by default.
+    "compare_type": True,
+}
 
 
 def run_migrations_offline() -> None:
@@ -43,12 +60,16 @@ def run_migrations_offline() -> None:
 
     Useful when a DBA has to review or apply the change by hand, which is the
     normal path in firms that do not grant DDL rights to application accounts.
+
+    The emitted script assumes the ``app`` schema already exists: offline mode
+    cannot query for it, and Alembic writes its version table before the first
+    migration runs.
     """
     context.configure(
         url=_database_url(),
-        target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        **_CONTEXT_OPTIONS,
     )
 
     with context.begin_transaction():
@@ -62,12 +83,13 @@ def run_migrations_online() -> None:
     connectable = create_engine(_database_url(), poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            # Detect column type changes, which Alembic ignores by default.
-            compare_type=True,
-        )
+        # Alembic creates its version table inside the application schema, and it
+        # does so before the first migration has had a chance to create that
+        # schema. Ensuring it here breaks the circle.
+        connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{app_db.SCHEMA}"'))
+        connection.commit()
+
+        context.configure(connection=connection, **_CONTEXT_OPTIONS)
 
         with context.begin_transaction():
             context.run_migrations()

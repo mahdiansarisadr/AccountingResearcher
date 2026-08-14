@@ -13,8 +13,8 @@ PY := $(VENV)/bin/python
 ALEMBIC := $(UV) run --no-sync alembic -c services/api/alembic.ini
 
 .PHONY: help sync up down ps logs seed catalog chat api worker health doctor \
-        clean-venv build stack stack-down stack-logs stack-migrate \
-        migrate migrate-down migrate-status migration
+        clean-venv build stack stack-down stack-logs stack-migrate test \
+        migrate migrate-down migrate-status migration migrate-check
 
 help:
 	@echo "Environment"
@@ -34,7 +34,10 @@ help:
 	@echo "  make migrate         Apply pending migrations"
 	@echo "  make migrate-down    Revert the last migration"
 	@echo "  make migrate-status  Show current revision and history"
-	@echo '  make migration name="add runs table"   Create a new revision'
+	@echo "  make migrate-check   Fail if the models and the database disagree"
+	@echo '  make migration name="add users table"  Create a new revision'
+	@echo "Test"
+	@echo "  make test        Run the test suite"
 	@echo "Run"
 	@echo "  make api         Serve the HTTP API with reload"
 	@echo "  make worker      Run the background worker"
@@ -94,9 +97,18 @@ migrate-status:
 	$(ALEMBIC) current --verbose
 	$(ALEMBIC) history
 
+# Catches a model edited without a migration written for it.
+migrate-check:
+	$(ALEMBIC) check
+
+# --autogenerate diffs the models against the live database, so the revision
+# arrives populated; review it before committing, as it cannot see intent.
 migration:
-	@test -n "$(name)" || { echo 'usage: make migration name="add runs table"'; exit 1; }
-	$(ALEMBIC) revision -m "$(name)"
+	@test -n "$(name)" || { echo 'usage: make migration name="add users table"'; exit 1; }
+	$(ALEMBIC) revision --autogenerate -m "$(name)"
+
+test:
+	$(UV) run --no-sync pytest
 
 seed:
 	$(UV) run --no-sync ar-seed

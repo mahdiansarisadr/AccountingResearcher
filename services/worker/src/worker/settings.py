@@ -15,16 +15,16 @@ class WorkerSettings(BaseSettings):
         extra="ignore",
     )
 
-    # Defaults target the host; Compose overrides with the redis service name.
+    # Defaults target the host; Compose overrides with the service names.
     redis_url: str = "redis://localhost:6379/0"
+    # The application schema, where the worker records what became of each run.
+    # The same DATABASE_URL the API and Alembic use.
+    database_url: str = "postgresql://ar_admin:ar_admin@localhost:5433/accounting"
 
     environment: str = "development"
 
     # How long to wait for Redis before giving up on a connection attempt.
     redis_connect_timeout: float = 5.0
-
-    # Seconds between idle-loop heartbeats (placeholder until real job consumption).
-    heartbeat_interval: float = 15.0
 
 
 @lru_cache

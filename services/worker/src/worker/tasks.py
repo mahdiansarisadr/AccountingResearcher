@@ -1,4 +1,4 @@
-"""The job RQ executes: run the agent and publish what it emits.
+"""The job RQ executes: run the agent, publish what it emits, record how it ended.
 
 This module is the seam between the queue and the agent. It contains no agent
 logic — that lives in accounting_research.agent.runner — and no HTTP concerns.
@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
+import app_db
 import run_bus
+from accounting_research.agent.events import Done, Error
 from accounting_research.agent.runner import run_agent
 from redis import Redis
 
@@ -36,49 +39,83 @@ def execute_run(
     message: str,
     history: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Execute one agent run, publishing every event to the run's stream.
+    """Execute one agent run, publishing every event and recording the outcome.
 
-    Returns the final status. Exceptions are deliberately not allowed to escape
-    as the only signal: a client streaming this run must receive a terminating
-    event, so failures are published before being re-raised for the queue's own
-    bookkeeping.
+    Returns the final status. Exceptions are deliberately not allowed to be the
+    only signal: a client streaming this run must receive a terminating event, so
+    failures are published and recorded before being re-raised for the queue's
+    own bookkeeping.
     """
     settings = get_worker_settings()
     redis = Redis.from_url(settings.redis_url)
+    run_uuid = UUID(run_id)
+    settled = False
+
+    def settle(status: app_db.RunStatus, error: str | None = None) -> None:
+        nonlocal settled
+        with app_db.session_scope(settings.database_url) as session:
+            app_db.mark_finished(session, run_uuid, status, error)
+        settled = True
 
     logger.info("run %s starting", run_id)
-    run_bus.set_status(redis, run_id, "running")
+    with app_db.session_scope(settings.database_url) as session:
+        if not app_db.mark_running(session, run_uuid):
+            # The API commits the row before enqueuing, so this means the record
+            # is gone or already settled. Stream the run anyway — a client is
+            # probably waiting on it — but say so, because it should not happen.
+            logger.warning("run %s has no queued record", run_id)
 
-    def cancelled() -> bool:
-        return run_bus.cancel_requested(redis, run_id)
-
-    status = "failed"
     try:
+        # Cancelled while it sat in the queue. Nothing to execute, but a client
+        # streaming this run still needs an event that ends the stream.
+        if run_bus.cancel_requested(redis, run_id):
+            logger.info("run %s cancelled before it started", run_id)
+            settle(app_db.RunStatus.CANCELLED)
+            run_bus.publish(redis, run_id, Done(run_id=run_id, status="cancelled"))
+            return app_db.RunStatus.CANCELLED.value
+
+        outcome = app_db.RunStatus.FAILED
+        error: str | None = None
+
         for event in run_agent(
             message,
             history=history,
             run_id=run_id,
             agent=_get_agent(),
-            is_cancelled=cancelled,
+            is_cancelled=lambda: run_bus.cancel_requested(redis, run_id),
         ):
-            # Record the outcome *before* publishing the terminal event. A client
-            # that sees "done" may immediately ask for the status, and would
-            # otherwise be told the run is still running.
+            if event.type == "error":
+                # The runner reports failure as an error event followed by done.
+                # Keeping the message is what lets the record say why a run
+                # failed rather than only that it did.
+                error = event.message
             if event.type == "done":
-                status = event.status
-                run_bus.set_status(redis, run_id, status)
+                outcome = app_db.RunStatus(event.status)
+                # Record the outcome *before* publishing the terminal event. A
+                # client that sees "done" may immediately ask about the run, and
+                # would otherwise be told it is still running.
+                settle(outcome, error if outcome is app_db.RunStatus.FAILED else None)
             run_bus.publish(redis, run_id, event)
-        logger.info("run %s finished: %s", run_id, status)
-        return status
-    except Exception as exc:
-        # run_agent converts most failures into events itself; this covers the
-        # rest (Redis errors, a broken agent build) so the stream still ends.
-        logger.exception("run %s crashed", run_id)
-        from accounting_research.agent.events import Done, Error
 
-        run_bus.publish(redis, run_id, Error(message=f"{type(exc).__name__}: {exc}"))
+        if not settled:
+            # run_agent guarantees exactly one done event. If that ever stops
+            # being true, record a failure rather than leave a row running for
+            # good.
+            logger.error("run %s produced no terminal event", run_id)
+            settle(app_db.RunStatus.FAILED, "run ended without a terminal event")
+
+        logger.info("run %s finished: %s", run_id, outcome.value)
+        return outcome.value
+
+    except Exception as exc:
+        logger.exception("run %s crashed", run_id)
+        detail = f"{type(exc).__name__}: {exc}"
+        # Publish before recording here, the opposite of the happy path: the
+        # thing that just failed may well be the database, and a client waiting
+        # on this stream has to be released either way.
+        run_bus.publish(redis, run_id, Error(message=detail))
         run_bus.publish(redis, run_id, Done(run_id=run_id, status="failed"))
+        settle(app_db.RunStatus.FAILED, detail)
         raise
     finally:
-        run_bus.set_status(redis, run_id, status)
         redis.close()

@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 # the shared environment (the root itself is not a shipped package).
 dependencies = [
     "accounting-research",
+    "app-db",
     "run-bus",
     "api",
     "worker",
@@ -15,11 +16,28 @@ dependencies = [
 [tool.uv]
 package = false
 
+[dependency-groups]
+# Test-only, installed by `uv sync` and excluded from images via `--no-dev`.
+dev = [
+    "pytest>=8.2",
+    # TestClient's transport.
+    "httpx>=0.27",
+    # An in-process Redis, so the run bus can be tested without a server.
+    "fakeredis>=2.23",
+]
+
 [tool.uv.workspace]
 members = ["packages/*", "services/*"]
 
 [tool.uv.sources]
 accounting-research = { workspace = true }
+app-db = { workspace = true }
 run-bus = { workspace = true }
 api = { workspace = true }
 worker = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests that need Postgres skip themselves when it is unreachable; this makes
+# them visible as skips rather than silent absences.
+addopts = "-ra"

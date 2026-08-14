@@ -14,9 +14,9 @@ QUEUE_NAME = "runs"
 # depending on the worker package (and therefore on the agent's dependencies).
 JOB_FUNCTION = "worker.tasks.execute_run"
 
-# How long a finished run's event log and status stay readable. Long enough for
-# a browser to reconnect and replay, short enough that Redis is not an archive:
-# Postgres becomes the durable record in Phase 3.
+# How long a finished run's event log stays readable. Long enough for a browser
+# to reconnect and replay, short enough that Redis is not an archive — the
+# durable record of a run is its row in app.runs.
 RUN_TTL_SECONDS = 60 * 60
 
 
@@ -28,8 +28,3 @@ def events_stream(run_id: str) -> str:
 def cancel_flag(run_id: str) -> str:
     """Set when someone asks for a run to stop; polled by the running job."""
     return f"run:{run_id}:cancel"
-
-
-def status_key(run_id: str) -> str:
-    """Last known status, so a client can ask about a run it is not streaming."""
-    return f"run:{run_id}:status"
