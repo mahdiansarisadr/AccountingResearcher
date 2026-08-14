@@ -2,8 +2,7 @@
 
 Building the app inside a function (rather than at import time) keeps
 construction explicit and lets tests create isolated instances with their own
-configuration. Endpoints are grouped into routers by concern; a later phase adds
-a threads router here.
+configuration. Endpoints are grouped into routers by concern.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__
-from .routers import admin, auth, health, runs
+from .routers import admin, auth, health, runs, threads
 from .settings import get_api_settings
 
 # The OAuth handshake takes two requests — out to Google and back — and the state
@@ -48,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(admin.router)
+    app.include_router(threads.router)
     app.include_router(runs.router)
     return app
 

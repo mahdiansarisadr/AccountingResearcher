@@ -134,14 +134,21 @@ def admin(session: Session) -> app_db.User:
 
 
 @pytest.fixture
-def queued_run(session: Session, owner: app_db.User):
-    """Record a queued run belonging to ``owner``.
+def thread(session: Session, owner: app_db.User) -> app_db.Thread:
+    """A conversation belonging to ``owner``, which runs in tests attach to."""
+    return app_db.create_thread(session, owner.id)
 
-    Runs need an owner now, and in most tests which owner is beside the point.
+
+@pytest.fixture
+def queued_run(session: Session, owner: app_db.User, thread: app_db.Thread):
+    """Record a queued run belonging to ``owner`` on ``thread``.
+
+    Runs need an owner and a thread now, and in most tests which ones are beside
+    the point.
     """
 
     def record(run_id: uuid.UUID) -> app_db.Run:
-        return app_db.create_run(session, run_id, owner.id)
+        return app_db.create_run(session, run_id, owner.id, thread.id)
 
     return record
 

@@ -38,3 +38,65 @@ class UserResponse(BaseModel):
             created_at=user.created_at,
             last_login_at=user.last_login_at,
         )
+
+
+class ThreadResponse(BaseModel):
+    """A conversation as listed and as returned on create."""
+
+    id: UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, thread: app_db.Thread) -> ThreadResponse:
+        return cls(
+            id=thread.id,
+            title=thread.title,
+            created_at=thread.created_at,
+            updated_at=thread.updated_at,
+        )
+
+
+class MessageResponse(BaseModel):
+    """One persisted turn. ``payload`` carries citations and SQL when present."""
+
+    id: UUID
+    role: app_db.MessageRole
+    content: str
+    payload: dict | None = None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, message: app_db.Message) -> MessageResponse:
+        return cls(
+            id=message.id,
+            role=message.role,
+            content=message.content,
+            payload=message.payload,
+            created_at=message.created_at,
+        )
+
+
+class RunResponse(BaseModel):
+    """A run as recorded. The same shape wherever a run is returned."""
+
+    run_id: UUID
+    thread_id: UUID
+    status: app_db.RunStatus
+    error: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    @classmethod
+    def of(cls, run: app_db.Run) -> RunResponse:
+        return cls(
+            run_id=run.id,
+            thread_id=run.thread_id,
+            status=run.status,
+            error=run.error,
+            created_at=run.created_at,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+        )

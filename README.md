@@ -138,32 +138,44 @@ curl -c cookies.txt -X POST localhost:8000/auth/dev-login \
 
 ## Running the agent over HTTP
 
-Start a run, then stream it. Starting returns immediately with a `run_id`
-because a run takes seconds, and holding an HTTP request open that long is
-fragile — a refresh or a proxy timeout would lose the work.
+Open a conversation, start a run on it, then stream it. Starting returns
+immediately with a `run_id` because a run takes seconds, and holding an HTTP
+request open that long is fragile — a refresh or a proxy timeout would lose the
+work.
 
 Every call carries the session cookie; `-b cookies.txt` below is the jar written
 by signing in above.
 
 ```bash
-# 1. Queue a run (202 Accepted)
-curl -b cookies.txt -X POST localhost:8000/runs -H 'content-type: application/json' \
-     -d '{"message":"Which audit cases have not been audited yet?"}'
-# -> {"run_id":"5e7b5c1a-...","status":"queued","error":null,
-#     "created_at":"...","started_at":null,"finished_at":null}
+# 1. Open a conversation
+curl -b cookies.txt -X POST localhost:8000/threads -H 'content-type: application/json' \
+     -d '{"title":"Audit cases"}'
+# -> {"id":"3a1c...","title":"Audit cases","created_at":"...","updated_at":"..."}
 
-# 2. Watch it happen
+# 2. Queue a run on it (202 Accepted)
+curl -b cookies.txt -X POST localhost:8000/threads/3a1c.../runs \
+     -H 'content-type: application/json' \
+     -d '{"message":"Which audit cases have not been audited yet?"}'
+# -> {"run_id":"5e7b5c1a-...","thread_id":"3a1c...","status":"queued",...}
+
+# 3. Watch it happen
 curl -b cookies.txt -N localhost:8000/runs/5e7b5c1a-.../stream
 
-# 3. Ask about it, or stop it
+# 4. Ask about it, stop it, or reread the conversation
 curl -b cookies.txt localhost:8000/runs/5e7b5c1a-...
 curl -b cookies.txt -X POST localhost:8000/runs/5e7b5c1a-.../cancel
+curl -b cookies.txt localhost:8000/threads/3a1c.../messages
 ```
 
-A run belongs to whoever started it. Someone else's run id is worth nothing:
-ownership is part of the query rather than a check on the result, so another
-user's run is reported as `404` — confirming that an id exists but belongs to
-someone else would itself be a disclosure.
+A thread, its messages and its runs belong to whoever created them. Someone
+else's id is worth nothing: ownership is part of the query rather than a check
+on the result, so another user's thread is reported as `404` — confirming that
+an id exists but belongs to someone else would itself be a disclosure.
+
+History is loaded from the thread, not accepted from the client. That is what
+makes a reload show the same conversation, and what stops a caller forging prior
+turns. A second question on a thread that still has a run in progress is a
+`409`.
 
 Asking about a run reads the `app.runs` table, so the answer survives a restart
 and outlives the hour its event log spends in Redis. The timestamps are there to
@@ -193,24 +205,26 @@ close on it without special-casing failures.
 ### How a run travels
 
 ```
-POST /runs ──▶ API writes a queued row to app.runs (and commits)
-                          │
-                          └──▶ enqueues on Redis (RQ) ──▶ worker picks it up
-                                                              │
-                                            marks the row running, then
-                                            run_agent() yields events
-                                                              │
-                                    worker appends each to a Redis Stream
-                                    and records the outcome on the row
-                                                              │
-GET /runs/{id}/stream ◀── API reads that stream ◀──────────────┘
-GET /runs/{id}        ◀── API reads app.runs
+POST /threads/{id}/runs ──▶ API appends the question, writes a queued row (and commits)
+                                      │
+                                      └──▶ enqueues on Redis (RQ) ──▶ worker picks it up
+                                                                          │
+                                                        marks the row running, then
+                                                        run_agent() yields events
+                                                                          │
+                                            worker appends each to a Redis Stream,
+                                            records the outcome, and on success
+                                            writes the assistant turn onto the thread
+                                                                          │
+GET /runs/{id}/stream          ◀── API reads that stream ◀────────────────┘
+GET /runs/{id}                 ◀── API reads app.runs
+GET /threads/{id}/messages     ◀── API reads app.messages
 ```
 
 Two stores, two jobs. **Redis** carries the run while it is happening;
-**Postgres** records what became of it. The row is committed *before* the job is
-enqueued, because a worker can claim it within milliseconds and its first act is
-to look the run up by id.
+**Postgres** records the conversation and what became of each turn. The row is
+committed *before* the job is enqueued, because a worker can claim it within
+milliseconds and its first act is to look the run up by id.
 
 Events go through a Redis **Stream**, not pub/sub. Pub/sub only reaches whoever
 is connected at that instant, and a client necessarily connects *after* starting
@@ -244,8 +258,8 @@ The **demo accounting tables** (`expenses`, `invoices`, …) are disposable
 fixtures. They come from `test_database_resources/*.sql` and are rebuilt from
 scratch by `make seed`. Dropping and recreating them is the normal workflow.
 
-The **application tables** (users and run records now; threads and messages as
-they arrive) hold real state, so they get versioned migrations via Alembic. Each
+The **application tables** (users, threads, messages and run records) hold real
+state, so they get versioned migrations via Alembic. Each
 change is a numbered file, Postgres records which files it has applied in
 `alembic_version`, and `make migrate` applies whatever is missing — so an
 existing database can move forward without being wiped.
@@ -358,10 +372,11 @@ packages/run_bus/src/run_bus/    Redis transport shared by api + worker
   bus.py                         Publish, read (blocking), cancel
 packages/app_db/src/app_db/      Postgres persistence shared by api + worker
   base.py                        Declarative base; the "app" schema boundary
-  models.py                      Tables: users, runs (threads/messages to come)
+  models.py                      Tables: users, threads, messages, runs
   engine.py                      Engine, session factory, transaction scope
   runs.py                        Guarded lifecycle transitions; owner-scoped reads
   users.py                       Accounts, roles, and recorded sign-ins
+  threads.py                     Conversations, messages, and history for the agent
 services/api/                    HTTP API (FastAPI)
   Dockerfile                     Built from the repo root; installs --package api
   alembic.ini                    Migration config (URL comes from the environment)
@@ -378,7 +393,8 @@ services/api/                    HTTP API (FastAPI)
   src/api/routers/health.py      /health (liveness), /ready (readiness)
   src/api/routers/auth.py        Sign in, sign out, /me; the domain rule
   src/api/routers/admin.py       List users, set role, revoke access
-  src/api/routers/runs.py        Start, stream, cancel, status
+  src/api/routers/threads.py     Conversations, message history, start a run
+  src/api/routers/runs.py        Stream, cancel, status
 services/worker/                 Background worker
   Dockerfile                     Built from the repo root; installs --package worker
   src/worker/main.py             RQ consumer: startup retry, warm shutdown
@@ -413,9 +429,11 @@ tests/                           Test suite (make test)
   test_runner.py                 The run event contract
   test_run_bus.py                Publish, replay, resume, cancel
   test_run_records.py            Guarded lifecycle transitions; run ownership
+  test_thread_records.py         Conversations, message order, cascade delete
   test_user_records.py           Accounts, roles, and returning users
   test_auth.py                   The domain rule, the cookie, and the guard
   test_admin.py                  Who may manage users, and what they may not do
+  test_threads_api.py            List, create, read, delete; isolation
   test_runs_api.py               Accept, report, stream, stop over HTTP
   test_worker_tasks.py           Events and records agreeing on every path
   test_sse.py                    Server-Sent Events framing

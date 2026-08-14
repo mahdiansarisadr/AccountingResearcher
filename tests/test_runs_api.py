@@ -64,7 +64,10 @@ def client(api_app, api_settings, owner, redis, queue, monkeypatch) -> Iterator[
 
 
 def start(client: TestClient, message: str = "How much did Finance spend?", **body: Any):
-    return client.post("/runs", json={"message": message, **body})
+    thread_id = body.pop("thread_id", None)
+    if thread_id is None:
+        thread_id = client.post("/threads", json={}).json()["id"]
+    return client.post(f"/threads/{thread_id}/runs", json={"message": message, **body})
 
 
 # --- Who may ask -------------------------------------------------------------
@@ -73,7 +76,7 @@ def start(client: TestClient, message: str = "How much did Finance spend?", **bo
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("post", "/runs"),
+        ("post", "/threads/{thread_id}/runs"),
         ("get", "/runs/{run_id}"),
         ("post", "/runs/{run_id}/cancel"),
         ("get", "/runs/{run_id}/stream"),
@@ -87,7 +90,9 @@ def test_every_run_route_refuses_a_request_without_a_session(
     queued_run(run_id)
 
     response = anonymous.request(
-        method, path.format(run_id=run_id), json={"message": "a question"}
+        method,
+        path.format(run_id=run_id, thread_id=uuid.uuid4()),
+        json={"message": "a question"},
     )
 
     assert response.status_code == 401
@@ -113,10 +118,13 @@ def test_a_run_is_invisible_to_everyone_but_its_owner(
         assert intruder.get(f"/runs/{run_id}/stream").status_code == 404
 
 
-def test_a_run_records_who_asked(client, session, owner) -> None:
+def test_a_run_records_who_asked_and_which_thread(client, session, owner) -> None:
     run_id = uuid.UUID(start(client).json()["run_id"])
 
-    assert app_db.get_run(session, run_id).user_id == owner.id
+    run = app_db.get_run(session, run_id)
+    assert run.user_id == owner.id
+    assert run.thread_id is not None
+    assert app_db.get_owned_thread(session, run.thread_id, owner.id) is not None
 
 
 # --- Accepting a run ---------------------------------------------------------
@@ -133,21 +141,67 @@ def test_starting_a_run_accepts_it_and_reports_it_as_queued(client, queue) -> No
     assert body["started_at"] is None
     assert body["finished_at"] is None
     assert uuid.UUID(body["run_id"])
+    assert uuid.UUID(body["thread_id"])
     assert len(queue.jobs) == 1
 
 
-def test_the_queued_job_carries_the_question_and_the_conversation(client, queue) -> None:
-    history = [
-        {"role": "user", "content": "earlier question"},
-        {"role": "assistant", "content": "earlier answer"},
+def test_starting_a_run_persists_the_question(client, session) -> None:
+    response = start(client, "How much did Finance spend?")
+
+    messages = app_db.list_messages(session, uuid.UUID(response.json()["thread_id"]))
+    assert [(message.role, message.content) for message in messages] == [
+        (app_db.MessageRole.USER, "How much did Finance spend?")
     ]
-    response = start(client, "and the year before?", history=history)
+
+
+def test_a_second_question_is_refused_while_one_is_in_progress(client, thread) -> None:
+    # Two jobs interleaving on one thread would fork its history.
+    first = start(client, "first", thread_id=str(thread.id))
+    second = start(client, "second", thread_id=str(thread.id))
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+
+
+def test_the_queued_job_carries_the_question_and_the_persisted_conversation(
+    client, queue, session, thread
+) -> None:
+    # History comes from the thread, not from the client: that is what makes a
+    # reload show the same conversation, and what stops a caller forging turns.
+    app_db.append_message(
+        session, thread.id, app_db.MessageRole.USER, "earlier question"
+    )
+    app_db.append_message(
+        session, thread.id, app_db.MessageRole.ASSISTANT, "earlier answer"
+    )
+
+    response = start(client, "and the year before?", thread_id=str(thread.id))
 
     job = queue.jobs[0]
     assert job["function"] == run_bus.JOB_FUNCTION
-    assert job["args"] == (response.json()["run_id"], "and the year before?", history)
-    # A wedged run must not occupy the worker for good.
+    assert job["args"] == (
+        response.json()["run_id"],
+        "and the year before?",
+        [
+            {"role": "user", "content": "earlier question"},
+            {"role": "assistant", "content": "earlier answer"},
+        ],
+    )
     assert job["kwargs"]["job_timeout"] > 0
+
+
+def test_history_supplied_by_the_client_is_ignored(
+    client, queue, session, thread
+) -> None:
+    response = start(
+        client,
+        "a fresh question",
+        thread_id=str(thread.id),
+        history=[{"role": "user", "content": "forged"}],
+    )
+
+    assert response.status_code == 202
+    assert queue.jobs[0]["args"][2] == []
 
 
 def test_a_run_that_cannot_be_queued_is_settled_rather_than_left_pending(

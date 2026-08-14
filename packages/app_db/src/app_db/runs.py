@@ -23,9 +23,17 @@ from .models import Run, RunStatus
 MAX_ERROR_CHARS = 2_000
 
 
-def create_run(session: Session, run_id: uuid.UUID, user_id: uuid.UUID) -> Run:
-    """Record a newly accepted run, queued and not yet started."""
-    run = Run(id=run_id, user_id=user_id, status=RunStatus.QUEUED)
+def create_run(
+    session: Session, run_id: uuid.UUID, user_id: uuid.UUID, thread_id: uuid.UUID
+) -> Run:
+    """Record a newly accepted run, queued and not yet started.
+
+    ``user_id`` is denormalised from the thread so a run lookup can enforce
+    ownership without a join. Both are set here, together, and never updated.
+    """
+    run = Run(
+        id=run_id, user_id=user_id, thread_id=thread_id, status=RunStatus.QUEUED
+    )
     session.add(run)
     # Flush to emit the INSERT, then refresh to load created_at, which the
     # database generates. Doing it now means the caller can read the row after

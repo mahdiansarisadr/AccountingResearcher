@@ -51,10 +51,30 @@ def execute_run(
     run_uuid = UUID(run_id)
     settled = False
 
-    def settle(status: app_db.RunStatus, error: str | None = None) -> None:
+    def settle(
+        status: app_db.RunStatus,
+        error: str | None = None,
+        answer: Any | None = None,
+    ) -> None:
         nonlocal settled
         with app_db.session_scope(settings.database_url) as session:
-            app_db.mark_finished(session, run_uuid, status, error)
+            moved = app_db.mark_finished(session, run_uuid, status, error)
+            # The assistant turn is written by whoever actually settled the run,
+            # so a redelivered job cannot append the same answer twice.
+            if (
+                moved
+                and status is app_db.RunStatus.SUCCEEDED
+                and answer is not None
+            ):
+                run = app_db.get_run(session, run_uuid)
+                if run is not None:
+                    app_db.append_message(
+                        session,
+                        run.thread_id,
+                        app_db.MessageRole.ASSISTANT,
+                        answer.answer,
+                        payload=answer.model_dump(),
+                    )
         settled = True
 
     logger.info("run %s starting", run_id)
@@ -76,6 +96,7 @@ def execute_run(
 
         outcome = app_db.RunStatus.FAILED
         error: str | None = None
+        answer: Any | None = None
 
         for event in run_agent(
             message,
@@ -84,6 +105,8 @@ def execute_run(
             agent=_get_agent(),
             is_cancelled=lambda: run_bus.cancel_requested(redis, run_id),
         ):
+            if event.type == "answer":
+                answer = event.answer
             if event.type == "error":
                 # The runner reports failure as an error event followed by done.
                 # Keeping the message is what lets the record say why a run
@@ -94,7 +117,11 @@ def execute_run(
                 # Record the outcome *before* publishing the terminal event. A
                 # client that sees "done" may immediately ask about the run, and
                 # would otherwise be told it is still running.
-                settle(outcome, error if outcome is app_db.RunStatus.FAILED else None)
+                settle(
+                    outcome,
+                    error if outcome is app_db.RunStatus.FAILED else None,
+                    answer if outcome is app_db.RunStatus.SUCCEEDED else None,
+                )
             run_bus.publish(redis, run_id, event)
 
         if not settled:

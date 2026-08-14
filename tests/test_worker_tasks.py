@@ -68,6 +68,32 @@ def test_a_successful_run_is_recorded_and_streamed(
     assert [event.type for event in published(redis, run_id)][-1] == "done"
 
 
+def test_a_successful_run_appends_the_assistant_turn(
+    execute, session, queued_run, run_id, thread
+) -> None:
+    queued_run(run_id)
+
+    assert (
+        execute(FakeAgent([state_chunk(structured=make_answer("42 dollars."))]), run_id)
+        == "succeeded"
+    )
+
+    messages = app_db.list_messages(session, thread.id)
+    assert [message.role for message in messages] == [app_db.MessageRole.ASSISTANT]
+    assert messages[0].content == "42 dollars."
+    assert messages[0].payload["confidence"] == 0.9
+
+
+def test_a_failed_run_does_not_invent_an_assistant_turn(
+    execute, session, queued_run, run_id, thread
+) -> None:
+    queued_run(run_id)
+
+    execute(FakeAgent([state_chunk()]), run_id)
+
+    assert app_db.list_messages(session, thread.id) == []
+
+
 def test_the_outcome_is_recorded_before_the_terminal_event_is_published(
     execute, session, redis, queued_run, run_id, monkeypatch
 ) -> None:

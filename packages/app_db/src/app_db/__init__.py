@@ -8,7 +8,7 @@ one vocabulary rather than two.
 
 from .base import SCHEMA, Base
 from .engine import get_engine, normalize_url, session_scope
-from .models import Run, RunStatus, User, UserRole
+from .models import Message, MessageRole, Run, RunStatus, Thread, User, UserRole
 from .runs import (
     MAX_ERROR_CHARS,
     create_run,
@@ -16,6 +16,19 @@ from .runs import (
     get_run,
     mark_finished,
     mark_running,
+)
+from .threads import (
+    DEFAULT_TITLE,
+    HISTORY_WINDOW,
+    append_message,
+    conversation_history,
+    create_thread,
+    delete_owned_thread,
+    get_owned_thread,
+    has_active_run,
+    list_messages,
+    list_threads,
+    touch_thread,
 )
 from .users import (
     get_by_email,
@@ -28,19 +41,32 @@ from .users import (
 )
 
 __all__ = [
+    "DEFAULT_TITLE",
+    "HISTORY_WINDOW",
     "MAX_ERROR_CHARS",
     "SCHEMA",
     "Base",
+    "Message",
+    "MessageRole",
     "Run",
     "RunStatus",
+    "Thread",
     "User",
     "UserRole",
+    "append_message",
+    "conversation_history",
     "create_run",
+    "create_thread",
+    "delete_owned_thread",
     "get_by_email",
     "get_by_id",
     "get_engine",
     "get_owned_run",
+    "get_owned_thread",
     "get_run",
+    "has_active_run",
+    "list_messages",
+    "list_threads",
     "list_users",
     "mark_finished",
     "mark_running",
@@ -48,6 +74,7 @@ __all__ = [
     "normalize_url",
     "record_login",
     "session_scope",
+    "touch_thread",
     "update_user",
     "upsert_user",
 ]

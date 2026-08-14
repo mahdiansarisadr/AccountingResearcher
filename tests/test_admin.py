@@ -66,7 +66,7 @@ def test_a_revoked_account_is_locked_out_at_once(
     as_admin.patch(f"/admin/users/{owner.id}", json={"is_active": False})
 
     assert as_member.get("/me").status_code == 403
-    assert as_member.post("/runs", json={"message": "anything"}).status_code == 403
+    assert as_member.post("/threads", json={}).status_code == 403
 
 
 def test_a_role_change_does_not_disturb_access(as_admin, owner) -> None:

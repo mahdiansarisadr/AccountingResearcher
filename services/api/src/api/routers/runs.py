@@ -1,77 +1,42 @@
-"""Starting, streaming, and cancelling agent runs.
+"""Reporting, streaming, and cancelling agent runs.
 
 Postgres is the record of a run; Redis carries it while it happens. A run's
 status, error and timings are read from the ``app.runs`` table, so they survive a
 restart and outlive the hour that its event log stays in Redis.
 
-Every route here requires a signed-in user and every lookup is scoped to them, so
-one person's run id is of no use to anyone else. Threads arrive in a later phase,
-at which point these routes move under ``/threads/{id}``.
+Starting a run lives under ``POST /threads/{id}/runs``: a run belongs to a
+conversation, and that conversation is what supplies its history. These routes
+are the ones that address a run by id — ask about it, watch it, stop it — and
+every lookup is scoped to the signed-in user.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from datetime import datetime
-from typing import Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import app_db
 import run_bus
 from accounting_research.agent.events import Done
 from fastapi import APIRouter, Header, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..deps import (
     CurrentUser,
-    QueueDep,
     RedisDep,
     SessionDep,
     SessionFactoryDep,
     get_redis,
 )
+from ..schemas import RunResponse
 from ..settings import get_api_settings
 from ..sse import SSE_HEADERS, comment, format_event
 
 logger = logging.getLogger("api.runs")
 
 router = APIRouter(prefix="/runs", tags=["runs"])
-
-
-class Turn(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
-class StartRunRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=4_000)
-    # The caller owns the conversation until threads are persisted.
-    history: list[Turn] = Field(default_factory=list)
-
-
-class RunResponse(BaseModel):
-    """A run as recorded. The same shape wherever a run is returned."""
-
-    run_id: UUID
-    status: app_db.RunStatus
-    error: str | None = None
-    created_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-
-    @classmethod
-    def of(cls, run: app_db.Run) -> RunResponse:
-        return cls(
-            run_id=run.id,
-            status=run.status,
-            error=run.error,
-            created_at=run.created_at,
-            started_at=run.started_at,
-            finished_at=run.finished_at,
-        )
 
 
 def _load(session: Session, run_id: UUID, owner: app_db.User) -> app_db.Run:
@@ -84,48 +49,6 @@ def _load(session: Session, run_id: UUID, owner: app_db.User) -> app_db.Run:
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown run")
     return run
-
-
-@router.post("", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
-def start_run(
-    request: StartRunRequest, user: CurrentUser, session: SessionDep, queue: QueueDep
-) -> RunResponse:
-    """Queue a run and return immediately.
-
-    202 rather than 200: the work has been accepted, not completed. The client
-    then opens the stream to watch it happen.
-    """
-    settings = get_api_settings()
-    run_id = uuid4()
-    run = app_db.create_run(session, run_id, user.id)
-
-    # Commit before enqueuing, not after. A worker can claim the job within
-    # milliseconds and its first act is to look the run up by id, so the row has
-    # to be visible to other transactions before the job exists.
-    session.commit()
-
-    try:
-        queue.enqueue(
-            run_bus.JOB_FUNCTION,
-            str(run_id),
-            request.message,
-            [turn.model_dump() for turn in request.history],
-            job_timeout=settings.run_timeout_seconds,
-        )
-    except Exception as exc:  # noqa: BLE001 - reported to the caller as 503
-        # The row is committed but nothing will ever execute it. Settle it here
-        # rather than leave a run stuck at "queued" for good.
-        logger.exception("could not queue run %s", run_id)
-        app_db.mark_finished(
-            session, run_id, app_db.RunStatus.FAILED, f"could not queue run: {exc}"
-        )
-        session.commit()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="could not queue run"
-        ) from exc
-
-    logger.info("queued run %s", run_id)
-    return RunResponse.of(run)
 
 
 @router.get("/{run_id}", response_model=RunResponse)
