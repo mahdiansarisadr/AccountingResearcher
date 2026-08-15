@@ -117,6 +117,7 @@ def current_user(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="this account is deactivated"
             )
+        request.state.user_id = str(user.id)
         return user
 
 

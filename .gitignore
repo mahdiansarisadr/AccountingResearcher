@@ -21,5 +21,6 @@ venv/
 
 # Node
 node_modules/
+.next/
 dist/
 build/

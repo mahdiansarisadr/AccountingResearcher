@@ -12,9 +12,10 @@ PY := $(VENV)/bin/python
 
 ALEMBIC := $(UV) run --no-sync alembic -c services/api/alembic.ini
 
-.PHONY: help sync up down ps logs seed catalog chat api worker health doctor \
+.PHONY: help sync up down ps logs seed catalog chat api worker frontend health doctor \
         clean-venv build stack stack-down stack-logs stack-migrate test \
-        migrate migrate-down migrate-status migration migrate-check
+        migrate migrate-down migrate-status migration migrate-check \
+        prod-build prod-up prod-down prod-logs prod-migrate prod-seed prod-catalog
 
 help:
 	@echo "Environment"
@@ -23,10 +24,14 @@ help:
 	@echo "  make clean-venv  Delete the virtualenv"
 	@echo "Infrastructure"
 	@echo "  make up / down / ps / logs   Postgres + Redis via docker compose"
-	@echo "  make build       Build the api and worker images"
-	@echo "  make stack       Run everything in containers (adds api + worker)"
+	@echo "  make build       Build the api, worker and frontend images"
+	@echo "  make stack       Run everything in containers (adds api + worker + frontend)"
 	@echo "  make stack-down  Stop the full stack"
-	@echo "  make stack-logs  Follow api + worker logs"
+	@echo "  make stack-logs  Follow api + worker + frontend logs"
+	@echo "  make stack-migrate  Apply from inside the api container"
+	@echo "Production (needs PUBLIC_HOST, e.g. research.example.com)"
+	@echo "  make prod-build / prod-up / prod-down / prod-logs"
+	@echo "  make prod-migrate / prod-seed / prod-catalog"
 	@echo "Data"
 	@echo "  make seed        Load synthetic accounting data"
 	@echo "  make catalog     Build the schema catalog used for table selection"
@@ -41,6 +46,7 @@ help:
 	@echo "Run"
 	@echo "  make api         Serve the HTTP API with reload"
 	@echo "  make worker      Run the background worker"
+	@echo "  make frontend    Serve the chat UI on :3000"
 	@echo "  make chat        Interactive agent CLI"
 	@echo "  make health      Curl /health and /ready"
 
@@ -80,12 +86,40 @@ stack-down:
 	docker compose --profile apps down
 
 stack-logs:
-	docker compose --profile apps logs -f api worker
+	docker compose --profile apps logs -f api worker frontend
 
 # Migrations are a deliberate step, never something the app runs on startup:
 # with more than one replica, concurrent startups would race on the same DDL.
 stack-migrate:
 	docker compose --profile apps run --rm api alembic -c /app/services/api/alembic.ini upgrade head
+
+COMPOSE_PROD := docker compose -f docker-compose.prod.yml
+
+prod-build:
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-build PUBLIC_HOST=research.example.com'; exit 1; }
+	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) build
+
+prod-up:
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-up PUBLIC_HOST=research.example.com'; exit 1; }
+	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) up -d
+
+prod-down:
+	$(COMPOSE_PROD) down
+
+prod-logs:
+	$(COMPOSE_PROD) logs -f api worker frontend caddy
+
+prod-migrate:
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-migrate PUBLIC_HOST=research.example.com'; exit 1; }
+	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) run --rm api alembic -c /app/services/api/alembic.ini upgrade head
+
+prod-seed:
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required'; exit 1; }
+	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) run --rm api ar-seed
+
+prod-catalog:
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required'; exit 1; }
+	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) run --rm api ar-catalog
 
 migrate:
 	$(ALEMBIC) upgrade head
@@ -124,6 +158,9 @@ api:
 
 worker:
 	$(UV) run --no-sync ar-worker
+
+frontend:
+	npm --prefix services/frontend run dev
 
 health:
 	@curl -fsS localhost:8000/health && echo

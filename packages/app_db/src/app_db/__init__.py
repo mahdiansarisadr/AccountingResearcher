@@ -16,6 +16,7 @@ from .runs import (
     get_run,
     mark_finished,
     mark_running,
+    count_active_runs,
 )
 from .threads import (
     DEFAULT_TITLE,
@@ -55,6 +56,7 @@ __all__ = [
     "UserRole",
     "append_message",
     "conversation_history",
+    "count_active_runs",
     "create_run",
     "create_thread",
     "delete_owned_thread",

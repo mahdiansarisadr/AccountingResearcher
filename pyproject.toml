@@ -27,7 +27,7 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["packages/*", "services/*"]
+members = ["packages/*", "services/api", "services/worker"]
 
 [tool.uv.sources]
 accounting-research = { workspace = true }

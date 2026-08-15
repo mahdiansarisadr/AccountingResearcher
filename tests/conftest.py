@@ -38,6 +38,25 @@ DOMAIN = "example-firm.test"
 # Long enough to satisfy the minimum the settings enforce.
 SECRET = "test-signing-secret-not-used-anywhere-real"
 
+# A complete production configuration. Tests that assert a *missing* field still
+# construct ApiSettings themselves; this is the baseline that should boot.
+PRODUCTION = {
+    "environment": "production",
+    "session_secret": "a-production-secret-of-adequate-length-here",
+    "allowed_email_domain": DOMAIN,
+    "google_client_id": "prod-client-id",
+    "google_client_secret": "prod-client-secret",
+    "oauth_redirect_url": "https://research.example.test/auth/callback",
+    "post_login_redirect": "https://research.example.test",
+    "cors_origins": "https://research.example.test",
+    "public_host": "research.example.test",
+    "dev_login_enabled": False,
+}
+
+
+def production_settings(**overrides) -> ApiSettings:
+    return ApiSettings(**{**PRODUCTION, **overrides})
+
 
 @pytest.fixture
 def redis() -> Iterator[fakeredis.FakeRedis]:
@@ -111,6 +130,12 @@ def api_settings() -> ApiSettings:
         google_client_secret="test-client-secret",
         session_secret=SECRET,
         dev_login_enabled=False,
+        # Tests follow the post-login redirect on the API itself; the real
+        # default points at the frontend.
+        post_login_redirect="/me",
+        # The limiter talks to Redis. Off here so the rest of the suite does not
+        # need a stand-in on every request; tests for the limiter turn it on.
+        rate_limit_requests=0,
     )
 
 
@@ -161,7 +186,7 @@ def api_app(session: Session, api_settings: ApiSettings) -> FastAPI:
     and the guard verifies it and loads the user for real. Only the edges — the
     database transaction and the configuration — are swapped.
     """
-    app = create_app()
+    app = create_app(api_settings)
     app.dependency_overrides[get_session] = lambda: session
     # The streaming path opens and closes its own transaction; hand it the test
     # session without letting it be closed at the end of the request.

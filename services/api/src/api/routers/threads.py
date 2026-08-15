@@ -17,9 +17,8 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..deps import CurrentUser, QueueDep, RedisDep, SessionDep
+from ..deps import CurrentUser, QueueDep, RedisDep, SessionDep, SettingsDep
 from ..schemas import MessageResponse, RunResponse, ThreadResponse
-from ..settings import get_api_settings
 
 logger = logging.getLogger("api.threads")
 
@@ -100,6 +99,7 @@ def start_run(
     user: CurrentUser,
     session: SessionDep,
     queue: QueueDep,
+    settings: SettingsDep,
 ) -> RunResponse:
     """Queue a run on this thread and return immediately.
 
@@ -111,6 +111,11 @@ def start_run(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="this thread already has a run in progress",
+        )
+    if app_db.count_active_runs(session, user.id) >= settings.max_concurrent_runs_per_user:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many runs in progress",
         )
 
     # History is whatever this thread already contains, taken before the new
@@ -124,7 +129,6 @@ def start_run(
         title_from=request.message,
     )
 
-    settings = get_api_settings()
     run_id = uuid4()
     run = app_db.create_run(session, run_id, user.id, thread.id)
 

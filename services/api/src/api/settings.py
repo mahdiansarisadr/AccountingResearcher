@@ -18,6 +18,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 MIN_SECRET_CHARS = 32
 
 
+# Google's `hd` parameter is a hint for Workspace account choosers. Consumer
+# Gmail is not a hosted domain; sending hd=gmail.com has been seen to skip the
+# normal password prompt and dump the user into a passkey/Bluetooth flow.
+_CONSUMER_GOOGLE_DOMAINS = frozenset({"gmail.com", "googlemail.com", "google.com"})
+
+
 class ApiSettings(BaseSettings):
     # extra="ignore" so the shared .env can also hold the agent's AR_* keys.
     model_config = SettingsConfigDict(
@@ -72,9 +78,32 @@ class ApiSettings(BaseSettings):
     # nothing else. Production refuses to start without it.
     session_secret: str = ""
 
-    # Where the browser lands after a successful sign-in. Points at the frontend
-    # once there is one.
-    post_login_redirect: str = "/me"
+    # Where the browser lands after a successful sign-in.
+    post_login_redirect: str = "http://localhost:3000"
+
+    # Origins allowed to call this API from a browser. A wildcard cannot be used
+    # with credentialed cookies, so this is an explicit list.
+    cors_origins: str = "http://localhost:3000"
+
+    # Public hostname the reverse proxy serves (no scheme). Production refuses
+    # to start without it, because TrustedHost, OAuth and CORS all have to name
+    # the same place.
+    public_host: str = ""
+
+    # Optional. Empty means error tracking is off; a missing DSN must not stop boot.
+    sentry_dsn: str = ""
+
+    # 0 disables the limiter, which is what the test suite uses so a Redis
+    # stand-in is not a prerequisite for every request.
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
+
+    # Ceiling on an incoming body. Chat messages are already capped at 4_000
+    # characters; this is the backstop for anything that is not that route.
+    max_request_bytes: int = 64 * 1024
+
+    # Queued + running, across every thread. Stops one account filling the queue.
+    max_concurrent_runs_per_user: int = 3
 
     # --- Development sign-in ---
     # Issues a session for any allowed-domain email without contacting Google,
@@ -115,6 +144,16 @@ class ApiSettings(BaseSettings):
                 raise ValueError("DEV_LOGIN_ENABLED must be off in production")
             if not self.allowed_email_domain:
                 raise ValueError("ALLOWED_EMAIL_DOMAIN is required in production")
+            if not self.google_client_id or not self.google_client_secret:
+                raise ValueError("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required in production")
+            if not self.public_host.strip() or "://" in self.public_host or "/" in self.public_host:
+                raise ValueError("PUBLIC_HOST is required in production and must be a hostname")
+            self._require_https(self.oauth_redirect_url, "OAUTH_REDIRECT_URL")
+            self._require_https(self.post_login_redirect, "POST_LOGIN_REDIRECT")
+            if not self.cors_origin_list:
+                raise ValueError("CORS_ORIGINS is required in production")
+            for origin in self.cors_origin_list:
+                self._require_https(origin, "CORS_ORIGINS")
 
         if self.session_secret and len(self.session_secret) < MIN_SECRET_CHARS:
             raise ValueError(f"SESSION_SECRET must be at least {MIN_SECRET_CHARS} characters")
@@ -125,9 +164,30 @@ class ApiSettings(BaseSettings):
         return self
 
     @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
     def normalized_domain(self) -> str:
         """The allowed domain, comparable against the tail of an email address."""
         return self.allowed_email_domain.strip().lower().lstrip("@")
+
+    @property
+    def hosted_domain_hint(self) -> str | None:
+        """Value for Google's ``hd`` parameter, or None when it would not help.
+
+        Only a Workspace domain belongs here. The callback still checks the
+        email itself; this is only a convenience for the account picker.
+        """
+        domain = self.normalized_domain
+        if not domain or domain in _CONSUMER_GOOGLE_DOMAINS:
+            return None
+        return domain
+
+    @staticmethod
+    def _require_https(url: str, name: str) -> None:
+        if not url.startswith("https://"):
+            raise ValueError(f"{name} must be HTTPS in production")
 
 
 @lru_cache

@@ -1,0 +1,39 @@
+{$PUBLIC_HOST} {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+		-Server
+	}
+
+	# API routes first. Everything else is the chat UI. Same host so the session
+	# cookie is first-party and Google returns to https://{host}/auth/callback.
+	handle /auth* {
+		reverse_proxy api:8000
+	}
+	handle /me {
+		reverse_proxy api:8000
+	}
+	handle /admin* {
+		reverse_proxy api:8000
+	}
+	handle /threads* {
+		reverse_proxy api:8000
+	}
+	handle /runs* {
+		reverse_proxy api:8000
+	}
+	handle /health {
+		reverse_proxy api:8000
+	}
+	handle /ready {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

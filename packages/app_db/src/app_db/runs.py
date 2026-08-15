@@ -103,3 +103,22 @@ def mark_finished(
         )
     )
     return result.rowcount == 1
+
+
+def count_active_runs(session: Session, user_id: uuid.UUID) -> int:
+    """How many of this user's runs have not yet settled.
+
+    The per-thread check in ``has_active_run`` stops two answers interleaving on
+    one conversation. This one is the cost cap: one account, every thread.
+    """
+    return int(
+        session.scalar(
+            select(func.count())
+            .select_from(Run)
+            .where(
+                Run.user_id == user_id,
+                Run.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+            )
+        )
+        or 0
+    )

@@ -1,4 +1,4 @@
-# Accounting Research Assistant — Phase 1
+# Accounting Research Assistant
 
 A text-to-SQL AI agent that answers accounting questions over a seeded Postgres
 store. It selects the relevant tables via a pgvector-backed **schema catalog**,
@@ -6,13 +6,14 @@ runs **read-only** SQL, and returns **cited, confidence-scored** answers —
 abstaining rather than guessing. See `docs/PRD.md` (what/why) and `docs/TDD.md`
 (how).
 
-This phase runs entirely locally: Postgres + pgvector in Docker, synthetic
-accounting data, a CLI chat interface, and LangSmith tracing.
+Runs locally: Postgres + pgvector and Redis in Docker, a FastAPI service, a
+worker, and a Next.js chat UI. The original CLI is still there.
 
 ## Prerequisites
 
 - Docker (for Postgres + pgvector and Redis)
 - Python 3.11+
+- Node 22+ (for the chat UI)
 - [`uv`](https://docs.astral.sh/uv/)
 - An OpenAI API key and (optional) LangSmith key
 
@@ -37,11 +38,12 @@ make seed
 # 5. Build the schema catalog (embeddings + full-text index for table selection)
 make catalog
 
-# 6. Create the application tables (users, run records)
+# 6. Create the application tables (users, threads, messages, run records)
 make migrate
 
-# 7. Chat
+# 7. Chat in the terminal, or open the UI
 make chat
+make frontend   # http://localhost:3000 — needs make api + make worker too
 ```
 
 The CLI needs none of the sign-in configuration below; it talks to the agent
@@ -53,6 +55,7 @@ directly. Fill that in when you want to use the HTTP API.
 make chat        # interactive chat REPL
 make api         # HTTP API on :8000 with reload
 make worker      # background worker
+make frontend    # chat UI on :3000
 make health      # curl /health and /ready
 make migrate     # apply pending migrations (run once before the API)
 make test        # run the test suite
@@ -84,12 +87,34 @@ change. Inside Compose the services reach each other by service name
 (`postgres:5432`, `redis:6379`), which is why `docker-compose.yml` overrides the
 localhost URLs that `.env` uses for host-based runs.
 
+### Production (Compose + Caddy)
+
+`docker-compose.prod.yml` is the shippable stack: no bind-mounts, no `--reload`,
+Postgres and Redis unpublished, Caddy on 80/443 terminating TLS and serving the
+UI and API on the same host. Let's Encrypt issues a certificate when
+`PUBLIC_HOST` is a real DNS name pointing at the VM.
+
+```bash
+# On the host, with .env filled in (SESSION_SECRET, Google, OPENAI_API_KEY)
+make prod-build PUBLIC_HOST=research.example.com
+make prod-up PUBLIC_HOST=research.example.com
+make prod-migrate PUBLIC_HOST=research.example.com
+make prod-seed PUBLIC_HOST=research.example.com      # demo data; skip on a real corpus
+make prod-catalog PUBLIC_HOST=research.example.com
+```
+
+Register `https://research.example.com/auth/callback` on the Google OAuth
+client. Change `POSTGRES_PASSWORD` in `.env` before the machine is public.
+`SENTRY_DSN` is optional; leave it empty to skip error tracking.
+
+Until a VM and domain exist, this file is the deploy artifact — same images,
+production settings, reverse proxy — waiting on DNS.
+
 ## Signing in
 
 Every route that touches data requires a session. The exceptions are the sign-in
-routes, `/health` and `/ready` (a probe cannot authenticate), and FastAPI's
-`/docs`, `/redoc` and `/openapi.json`, which describe the API's shape but expose
-none of its contents — worth closing in production as part of Phase 5 hardening.
+routes, `/health` and `/ready` (a probe cannot authenticate). FastAPI's `/docs`,
+`/redoc` and `/openapi.json` are served in development and closed in production.
 
 Access is granted by one rule: a verified Google account on
 the company domain. There is no invitation step and no password — anyone on the
@@ -122,6 +147,25 @@ database on every request, so revoking access or changing a role takes effect on
 the next request rather than whenever a week-old cookie expires. Signed, not
 encrypted — none of it is secret, and the signature is what stops it being
 edited.
+
+After Google returns, the API sets that cookie and redirects to
+`POST_LOGIN_REDIRECT` (the chat UI at `http://localhost:3000` in development).
+The UI then calls the API with `credentials: include`. `CORS_ORIGINS` must name
+that UI origin explicitly: a wildcard cannot be combined with cookies.
+
+## Chat UI
+
+```bash
+make api && make worker && make frontend
+# then open http://localhost:3000
+```
+
+Sign in with Google, ask a question, watch tokens and tool steps stream in, stop
+a run, open an earlier conversation. Admins get a **Users** link to promote or
+deactivate people. Conversations are scoped to the signed-in account; a reload
+restores them from Postgres.
+
+First time: `npm --prefix services/frontend install`.
 
 ### Before you have Google credentials
 
@@ -175,7 +219,7 @@ an id exists but belongs to someone else would itself be a disclosure.
 History is loaded from the thread, not accepted from the client. That is what
 makes a reload show the same conversation, and what stops a caller forging prior
 turns. A second question on a thread that still has a run in progress is a
-`409`.
+`409`. A fourth in-flight run across a user's threads (cap: 3) is a `429`.
 
 Asking about a run reads the `app.runs` table, so the answer survives a restart
 and outlives the hour its event log spends in Redis. The timestamps are there to
@@ -360,7 +404,9 @@ A `uv` workspace: one lockfile and one virtualenv shared by several members.
 ```
 Makefile                         Developer entry points (make help)
 pyproject.toml                   Workspace root (members + shared dev deps)
-docker-compose.yml               Postgres + pgvector, Redis, api + worker (apps profile)
+docker-compose.yml               Postgres + pgvector, Redis, api + worker + frontend (apps profile)
+docker-compose.prod.yml          Production stack: unpublished DB, Caddy TLS, no reload
+deploy/Caddyfile                 Reverse proxy: same-host UI + API, security headers
 .dockerignore                    Build-context exclusions (shared by both images)
 test_database_resources/         Demo/test database bootstrap (seed-time only)
   init.sql                       Extension + read-only agent role
@@ -384,6 +430,9 @@ services/api/                    HTTP API (FastAPI)
   migrations/versions/           Migration files, applied in order
   src/api/main.py                App factory
   src/api/settings.py            API settings from .env
+  src/api/logconfig.py           JSON logs in production (never the query string)
+  src/api/middleware.py          Request id, body cap, rate limit (ASGI, SSE-safe)
+  src/api/observability.py       Optional Sentry
   src/api/deps.py                Injectable Redis, queue, DB session; the auth guard
   src/api/security.py            Issue, verify and clear the session cookie
   src/api/oauth.py               The Google OAuth client
@@ -400,6 +449,14 @@ services/worker/                 Background worker
   src/worker/main.py             RQ consumer: startup retry, warm shutdown
   src/worker/tasks.py            The job: run the agent, publish its events
   src/worker/settings.py         Worker settings from .env
+  src/worker/logconfig.py        JSON logs in production
+services/frontend/               Chat UI (Next.js + Tailwind)
+  Dockerfile                     Standalone Next build; API URL baked in at build
+  src/app/page.tsx               Chat: threads, streaming, cancel
+  src/app/login/page.tsx         Google sign-in
+  src/app/admin/page.tsx         User management (admin only)
+  src/lib/api.ts                 Cookie-credentialed fetch to the API
+  src/lib/sse.ts                 EventSource reader for a run
 packages/accounting_research/src/accounting_research/
   core/
     settings.py                  Settings from .env
@@ -437,4 +494,6 @@ tests/                           Test suite (make test)
   test_runs_api.py               Accept, report, stream, stop over HTTP
   test_worker_tasks.py           Events and records agreeing on every path
   test_sse.py                    Server-Sent Events framing
+  test_cors.py                   Frontend origin allowed; others not reflected
+  test_hardening.py              Docs closed, body cap, rate limit, request ids
 ```

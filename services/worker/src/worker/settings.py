@@ -26,6 +26,9 @@ class WorkerSettings(BaseSettings):
     # How long to wait for Redis before giving up on a connection attempt.
     redis_connect_timeout: float = 5.0
 
+    # Optional. Empty means error tracking is off.
+    sentry_dsn: str = ""
+
 
 @lru_cache
 def get_worker_settings() -> WorkerSettings:

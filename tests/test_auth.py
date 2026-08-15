@@ -23,7 +23,7 @@ from api.settings import ApiSettings, get_api_settings
 from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 
-from .conftest import DOMAIN, session_cookie, sign_in
+from .conftest import DOMAIN, production_settings, session_cookie, sign_in
 
 
 def claims(email: str, **overrides) -> dict:
@@ -423,28 +423,33 @@ def test_the_development_sign_in_cannot_be_switched_on_in_production() -> None:
     # sessions for arbitrary addresses must not be one env var away from being
     # reachable in production.
     with pytest.raises(ValueError, match="DEV_LOGIN_ENABLED"):
-        ApiSettings(
-            environment="production",
-            dev_login_enabled=True,
-            session_secret="a-production-secret-of-adequate-length-here",
-            allowed_email_domain=DOMAIN,
-        )
+        production_settings(dev_login_enabled=True)
 
 
 def test_production_refuses_to_start_without_a_signing_secret() -> None:
     # A committed default would be a published private key: anyone could forge a
     # session for any address.
     with pytest.raises(ValueError, match="SESSION_SECRET"):
-        ApiSettings(environment="production", session_secret="", allowed_email_domain=DOMAIN)
+        production_settings(session_secret="")
 
 
 def test_production_refuses_to_start_without_a_domain_to_restrict_to() -> None:
     with pytest.raises(ValueError, match="ALLOWED_EMAIL_DOMAIN"):
-        ApiSettings(
-            environment="production",
-            session_secret="a-production-secret-of-adequate-length-here",
-            allowed_email_domain="",
-        )
+        production_settings(allowed_email_domain="")
+
+
+def test_production_refuses_to_start_without_google_credentials() -> None:
+    with pytest.raises(ValueError, match="GOOGLE_CLIENT"):
+        production_settings(google_client_id="", google_client_secret="")
+
+
+def test_production_refuses_http_origins_and_redirects() -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        production_settings(oauth_redirect_url="http://research.example.test/auth/callback")
+    with pytest.raises(ValueError, match="HTTPS"):
+        production_settings(cors_origins="http://research.example.test")
+    with pytest.raises(ValueError, match="PUBLIC_HOST"):
+        production_settings(public_host="")
 
 
 def test_a_signing_secret_too_short_to_be_worth_having_is_refused() -> None:
@@ -460,3 +465,26 @@ def test_development_generates_a_secret_rather_than_shipping_one() -> None:
     # Different every time, so an unset secret costs a re-login after a restart
     # and never a forgeable session.
     assert generated != again
+
+
+def test_gmail_is_not_sent_to_google_as_a_hosted_domain() -> None:
+    # hd is for Workspace. gmail.com is not one, and asking Google to filter to
+    # it has been seen to skip the password prompt for a passkey/Bluetooth flow.
+    settings = ApiSettings(
+        environment="test",
+        session_secret="test-signing-secret-not-used-anywhere-real",
+        allowed_email_domain="gmail.com",
+    )
+
+    assert settings.normalized_domain == "gmail.com"
+    assert settings.hosted_domain_hint is None
+
+
+def test_a_workspace_domain_is_offered_as_a_hosted_domain_hint() -> None:
+    settings = ApiSettings(
+        environment="test",
+        session_secret="test-signing-secret-not-used-anywhere-real",
+        allowed_email_domain="acme.com",
+    )
+
+    assert settings.hosted_domain_hint == "acme.com"

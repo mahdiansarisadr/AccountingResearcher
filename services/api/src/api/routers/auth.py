@@ -149,12 +149,16 @@ async def login(request: Request, settings: SettingsDep) -> Response:
             detail="Google sign-in is not configured",
         )
 
-    # hd pre-filters Google's account chooser to the company domain. A
-    # convenience for anyone signed into several accounts, and nothing more —
-    # it is a request to Google, not a control, which is why the callback checks
-    # the domain again on the claims it gets back.
+    # hd pre-filters Google's account chooser to a Workspace domain. It is a
+    # convenience, not a control — the callback still checks the email. It is
+    # omitted for consumer Gmail, where hd=gmail.com is not a hosted domain and
+    # has been seen to send people into a passkey/Bluetooth prompt instead of a
+    # password.
+    extra: dict[str, str] = {"prompt": "select_account"}
+    if settings.hosted_domain_hint:
+        extra["hd"] = settings.hosted_domain_hint
     return await get_oauth().google.authorize_redirect(
-        request, settings.oauth_redirect_url, hd=settings.normalized_domain
+        request, settings.oauth_redirect_url, **extra
     )
 
 

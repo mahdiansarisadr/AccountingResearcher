@@ -1,0 +1,131 @@
+# Production stack. Does not replace docker-compose.yml — that file stays the
+# local developer loop (published Postgres/Redis, bind-mounts, --reload).
+#
+#   PUBLIC_HOST=research.example.com docker compose -f docker-compose.prod.yml up -d
+#
+# Caddy terminates TLS (Let's Encrypt when PUBLIC_HOST is a real DNS name) and
+# serves the UI and API on the same host. Postgres and Redis are not published.
+# Set SESSION_SECRET, Google credentials, and a non-default POSTGRES_PASSWORD
+# in .env before this is reachable from the internet.
+
+name: ar-prod
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ar_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ar_admin}
+      POSTGRES_DB: ${POSTGRES_DB:-accounting}
+    volumes:
+      - ar_pgdata:/var/lib/postgresql/data
+      - ./test_database_resources/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ar_admin} -d ${POSTGRES_DB:-accounting}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ar_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    env_file: .env
+    environment:
+      ENVIRONMENT: production
+      PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST is required (the DNS name Caddy serves)}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
+      REDIS_URL: redis://redis:6379/0
+      AR_DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
+      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/${POSTGRES_DB:-accounting}
+      AR_DB_RESOURCES_DIR: /app/test_database_resources
+      OAUTH_REDIRECT_URL: https://${PUBLIC_HOST}/auth/callback
+      POST_LOGIN_REDIRECT: https://${PUBLIC_HOST}
+      CORS_ORIGINS: https://${PUBLIC_HOST}
+      DEV_LOGIN_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      - uvicorn
+      - api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --no-access-log
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    env_file: .env
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
+      REDIS_URL: redis://redis:6379/0
+      AR_DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
+      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/${POSTGRES_DB:-accounting}
+      AR_DB_RESOURCES_DIR: /app/test_database_resources
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked in at build. Rebuild the frontend image if PUBLIC_HOST changes.
+        NEXT_PUBLIC_API_URL: https://${PUBLIC_HOST}
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST is required}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  ar_pgdata:
+  ar_redisdata:
+  caddy_data:
+  caddy_config:

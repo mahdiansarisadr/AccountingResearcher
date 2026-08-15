@@ -54,6 +54,8 @@ services:
       AR_DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
       AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/accounting
       AR_DB_RESOURCES_DIR: /app/test_database_resources
+      POST_LOGIN_REDIRECT: http://localhost:3000
+      CORS_ORIGINS: http://localhost:3000
     ports:
       - "8000:8000"
     depends_on:
@@ -115,6 +117,21 @@ services:
     # The worker handles SIGTERM, so give it room to drain instead of the
     # default 10s before Docker escalates to SIGKILL.
     stop_grace_period: 30s
+
+  frontend:
+    profiles: ["apps"]
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile
+      args:
+        # The browser, not the container, calls the API, so this is the host URL.
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    container_name: ar_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   ar_pgdata:

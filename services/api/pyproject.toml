@@ -27,6 +27,7 @@ dependencies = [
     # Signs and verifies our own session cookie. Authlib's own JWT module is
     # deprecated in favour of this, and it arrives with Authlib either way.
     "joserfc>=1.0",
+    "sentry-sdk[fastapi]>=2.0",
 ]
 
 [tool.uv.sources]

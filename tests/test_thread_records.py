@@ -135,6 +135,18 @@ def test_an_active_run_is_detected(session, owner, thread, run_id) -> None:
     assert app_db.has_active_run(session, thread.id) is False
 
 
+def test_active_runs_are_counted_across_a_users_threads(session, owner, thread) -> None:
+    other = app_db.create_thread(session, owner.id)
+    first = app_db.create_run(session, uuid.uuid4(), owner.id, thread.id)
+    app_db.create_run(session, uuid.uuid4(), owner.id, other.id)
+
+    assert app_db.count_active_runs(session, owner.id) == 2
+
+    app_db.mark_finished(session, first.id, app_db.RunStatus.SUCCEEDED)
+
+    assert app_db.count_active_runs(session, owner.id) == 1
+
+
 def test_deleting_a_thread_removes_its_messages_and_runs(
     session, owner, thread, run_id
 ) -> None:

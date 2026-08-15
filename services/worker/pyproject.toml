@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.4",
     "redis>=5.0",
     "rq>=1.16",
+    "sentry-sdk>=2.0",
 ]
 
 [project.scripts]

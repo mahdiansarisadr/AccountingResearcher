@@ -15,6 +15,7 @@ import run_bus
 from rq import Queue, SimpleWorker
 
 from . import __version__
+from .logconfig import configure_logging
 from .settings import get_worker_settings
 
 logger = logging.getLogger("worker")
@@ -25,9 +26,20 @@ _shutdown = threading.Event()
 
 
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    configure_logging(get_worker_settings().environment)
+
+
+def _init_sentry() -> None:
+    settings = get_worker_settings()
+    if not settings.sentry_dsn:
+        return
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.environment,
+        release=__version__,
+        send_default_pii=False,
     )
 
 
@@ -66,6 +78,7 @@ def connect_to_redis(url: str, timeout: float) -> redis.Redis:
 
 def main() -> None:
     _configure_logging()
+    _init_sentry()
     _install_signal_handlers()
     settings = get_worker_settings()
 

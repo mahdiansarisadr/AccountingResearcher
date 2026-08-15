@@ -77,7 +77,7 @@ def execute_run(
                     )
         settled = True
 
-    logger.info("run %s starting", run_id)
+    logger.info("run %s starting", run_id, extra={"run_id": run_id})
     with app_db.session_scope(settings.database_url) as session:
         if not app_db.mark_running(session, run_uuid):
             # The API commits the row before enqueuing, so this means the record
@@ -131,7 +131,7 @@ def execute_run(
             logger.error("run %s produced no terminal event", run_id)
             settle(app_db.RunStatus.FAILED, "run ended without a terminal event")
 
-        logger.info("run %s finished: %s", run_id, outcome.value)
+        logger.info("run %s finished: %s", run_id, outcome.value, extra={"run_id": run_id})
         return outcome.value
 
     except Exception as exc:

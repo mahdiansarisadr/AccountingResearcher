@@ -16,6 +16,7 @@ import pytest
 import run_bus
 from accounting_research.agent.events import Done, RunStarted, Token
 from api.deps import get_queue, get_redis
+from api.settings import get_api_settings
 from fastapi.testclient import TestClient
 
 from .conftest import sign_in
@@ -161,6 +162,22 @@ def test_a_second_question_is_refused_while_one_is_in_progress(client, thread) -
 
     assert first.status_code == 202
     assert second.status_code == 409
+
+
+def test_a_user_cannot_have_more_in_flight_runs_than_the_cap(
+    client, api_app, api_settings
+) -> None:
+    # The per-thread 409 is about history. This is about cost: one account
+    # filling the queue from many conversations.
+    capped = api_settings.model_copy(update={"max_concurrent_runs_per_user": 1})
+    api_app.dependency_overrides[get_api_settings] = lambda: capped
+
+    first = start(client, "first")
+    second = start(client, "second")
+
+    assert first.status_code == 202
+    assert second.status_code == 429
+    assert second.json()["detail"] == "too many runs in progress"
 
 
 def test_the_queued_job_carries_the_question_and_the_persisted_conversation(
