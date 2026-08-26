@@ -44,7 +44,7 @@ services:
       context: .
       dockerfile: services/api/Dockerfile
     container_name: ar_api
-    # env_file supplies OPENAI_API_KEY, LANGSMITH_*, and the AR_* agent settings.
+    # env_file supplies ANTHROPIC_API_KEY, LANGSMITH_*, and the AR_* agent settings.
     # environment wins over env_file, so the host-facing localhost URLs in .env
     # are replaced here by compose service hostnames on the internal network.
     env_file: .env

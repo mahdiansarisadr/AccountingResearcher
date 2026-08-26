@@ -10,6 +10,7 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     ToolRetryMiddleware,
 )
+from langchain_anthropic import ChatAnthropic
 from langgraph.checkpoint.memory import InMemorySaver
 
 from ..core.settings import get_settings
@@ -34,8 +35,9 @@ def _middleware() -> list:
 
 def build_agent(checkpointer=None):
     settings = get_settings()
+    model_name = settings.llm_model.removeprefix("anthropic:")
     return create_agent(
-        model=f"openai:{settings.llm_model}",
+        model=ChatAnthropic(model=model_name, api_key=settings.anthropic_api_key),
         tools=TOOLS,
         system_prompt=get_system_prompt(),
         response_format=AgentAnswer,

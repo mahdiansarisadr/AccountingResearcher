@@ -15,7 +15,7 @@ worker, and a Next.js chat UI. The original CLI is still there.
 - Python 3.11+
 - Node 22+ (for the chat UI)
 - [`uv`](https://docs.astral.sh/uv/)
-- An OpenAI API key and (optional) LangSmith key
+- An Anthropic API key (the agent) and (optional) LangSmith key. Schema embeddings run locally from Hugging Face — no OpenAI key.
 
 ## Setup
 
@@ -24,7 +24,7 @@ All commands go through `make`, which pins the virtualenv location (see
 
 ```bash
 # 1. Configure secrets (already copied for local dev)
-cp .env.example .env   # then fill in OPENAI_API_KEY / LANGSMITH_API_KEY
+cp .env.example .env   # then fill in ANTHROPIC_API_KEY / LANGSMITH_API_KEY
 
 # 2. Install every workspace member into the shared virtualenv
 make sync
@@ -95,7 +95,7 @@ UI and API on the same host. Let's Encrypt issues a certificate when
 `PUBLIC_HOST` is a real DNS name pointing at the VM.
 
 ```bash
-# On the host, with .env filled in (SESSION_SECRET, Google, OPENAI_API_KEY)
+# On the host, with .env filled in (SESSION_SECRET, Google, ANTHROPIC_API_KEY)
 make prod-build PUBLIC_HOST=research.example.com
 make prod-up PUBLIC_HOST=research.example.com
 make prod-migrate PUBLIC_HOST=research.example.com
@@ -461,7 +461,7 @@ packages/accounting_research/src/accounting_research/
   core/
     settings.py                  Settings from .env
     db.py                        Admin + read-only connections
-    embeddings.py                Hosted OpenAI embeddings
+    embeddings.py                Local Hugging Face embeddings (catalog search)
   retrieval/
     metadata.py                  Loader for tables.yaml
     catalog.py                   Build schema catalog (ar-catalog)

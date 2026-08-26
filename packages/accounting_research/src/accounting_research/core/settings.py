@@ -30,8 +30,9 @@ def _default_db_resources_dir() -> Path:
 
 @dataclass(frozen=True)
 class Settings:
-    # LLM / embeddings
-    openai_api_key: str
+    # LLM / embeddings. The agent talks to Anthropic. Catalog search embeds
+    # locally with a Hugging Face model (fastembed / ONNX) — no OpenAI key.
+    anthropic_api_key: str
     llm_model: str
     embedding_model: str
     embedding_dim: int
@@ -72,10 +73,10 @@ def _require(name: str, value: str | None) -> str:
 @lru_cache
 def get_settings() -> Settings:
     return Settings(
-        openai_api_key=_require("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY")),
-        llm_model=os.getenv("AR_LLM_MODEL", "gpt-4o"),
-        embedding_model=os.getenv("AR_EMBEDDING_MODEL", "text-embedding-3-small"),
-        embedding_dim=int(os.getenv("AR_EMBEDDING_DIM", "1536")),
+        anthropic_api_key=_require("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY")),
+        llm_model=os.getenv("AR_LLM_MODEL", "claude-sonnet-4-5"),
+        embedding_model=os.getenv("AR_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
+        embedding_dim=int(os.getenv("AR_EMBEDDING_DIM", "384")),
         database_url=os.getenv(
             "AR_DATABASE_URL",
             "postgresql://ar_admin:ar_admin@localhost:5433/accounting",

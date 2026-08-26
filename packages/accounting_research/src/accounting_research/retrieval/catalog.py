@@ -97,6 +97,12 @@ def build() -> None:
 
         print(f"[{datetime.now():%H:%M:%S}] Embedding {len(docs)} table docs...")
         vectors = embed_documents(docs)
+        if vectors and len(vectors[0]) != settings.embedding_dim:
+            raise RuntimeError(
+                f"AR_EMBEDDING_DIM={settings.embedding_dim} does not match "
+                f"{settings.embedding_model} output ({len(vectors[0])}). "
+                "Update AR_EMBEDDING_DIM and rerun `make catalog`."
+            )
 
         for row, vec in zip(rows, vectors):
             cur.execute(
