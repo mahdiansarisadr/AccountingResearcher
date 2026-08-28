@@ -14,7 +14,7 @@ from typing import Any
 import app_db
 import pytest
 import run_bus
-from accounting_research.agent.events import Done, RunStarted, Token
+from mleng.agent.events import Done, RunStarted, Token
 from api.deps import get_queue, get_redis
 from api.settings import get_api_settings
 from fastapi.testclient import TestClient

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 
-import type { AgentAnswer, Message } from "@/lib/types";
+import type { AgentAnswer, Message, ThreadFile } from "@/lib/types";
 
 export type LiveTurn = {
   question: string;
@@ -18,33 +18,14 @@ function asAnswer(payload: Message["payload"]): AgentAnswer | null {
   return payload as AgentAnswer;
 }
 
-function Citations({ answer }: { answer: AgentAnswer }) {
-  if (!answer.citations.length && !answer.sql_used) return null;
+function AnswerMeta({ answer }: { answer: AgentAnswer }) {
+  if (!answer.abstained && !Number.isFinite(answer.confidence)) return null;
   return (
-    <details className="mt-3 text-xs text-ink-muted">
-      <summary className="cursor-pointer select-none">
-        {answer.abstained ? "Why this was declined" : "Sources"}
-        {Number.isFinite(answer.confidence)
-          ? ` · ${Math.round(answer.confidence * 100)}%`
-          : ""}
-      </summary>
-      <ul className="mt-2 space-y-1">
-        {answer.citations.map((citation, index) => (
-          <li key={`${citation.source_file}-${citation.locator}-${index}`}>
-            <span className="font-medium">{citation.source_file}</span>
-            <span className="text-ink-faint"> {citation.locator}</span>
-            {citation.snippet ? (
-              <span className="block text-ink-faint">{citation.snippet}</span>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-      {answer.sql_used ? (
-        <pre className="mt-2 overflow-x-auto rounded bg-ink/5 p-2 font-mono text-[11px] leading-5">
-          {answer.sql_used}
-        </pre>
-      ) : null}
-    </details>
+    <p className="mt-3 text-xs text-ink-muted">
+      {answer.abstained
+        ? `Declined${answer.reason ? `: ${answer.reason}` : ""}`
+        : `${Math.round(answer.confidence * 100)}% confidence`}
+    </p>
   );
 }
 
@@ -77,6 +58,8 @@ export function ChatPane({
   onDraft,
   onSend,
   onCancel,
+  onAttach,
+  files,
   streaming,
   emptyHint,
 }: {
@@ -86,10 +69,13 @@ export function ChatPane({
   onDraft: (value: string) => void;
   onSend: () => void;
   onCancel: () => void;
+  onAttach: (file: File) => void;
+  files: ThreadFile[];
   streaming: boolean;
   emptyHint: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -99,6 +85,41 @@ export function ChatPane({
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       onSend();
+    }
+  }
+
+  function takeTableFile(list: FileList | null): File | null {
+    const chosen = list?.[0];
+    if (!chosen) return null;
+    const name = chosen.name.toLowerCase();
+    if (name.endsWith(".csv") || name.endsWith(".parquet") || name.endsWith(".pq")) {
+      return chosen;
+    }
+    if (chosen.type === "text/csv" || chosen.type === "text/plain") {
+      return chosen;
+    }
+    return null;
+  }
+
+  function onDrop(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (streaming) return;
+    const file = takeTableFile(event.dataTransfer.files);
+    if (file) onAttach(file);
+  }
+
+  function onPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (streaming) return;
+    const file = takeTableFile(event.clipboardData.files);
+    if (file) {
+      event.preventDefault();
+      onAttach(file);
+      return;
+    }
+    const text = event.clipboardData.getData("text/plain");
+    if (text.length > 8_000) {
+      event.preventDefault();
+      onAttach(new File([text], "pasted.csv", { type: "text/csv" }));
     }
   }
 
@@ -126,7 +147,7 @@ export function ChatPane({
                     <p className="whitespace-pre-wrap">
                       {answer?.answer ?? message.content}
                     </p>
-                    {answer ? <Citations answer={answer} /> : null}
+                    {answer ? <AnswerMeta answer={answer} /> : null}
                   </Bubble>
                 );
               })}
@@ -145,7 +166,7 @@ export function ChatPane({
                 <p className="whitespace-pre-wrap">
                   {live.answer?.answer || live.tokens || (streaming ? "…" : "")}
                 </p>
-                {live.answer ? <Citations answer={live.answer} /> : null}
+                {live.answer ? <AnswerMeta answer={live.answer} /> : null}
                 {live.error ? (
                   <p className="mt-2 text-sm text-red-800">{live.error}</p>
                 ) : null}
@@ -161,14 +182,41 @@ export function ChatPane({
           event.preventDefault();
           onSend();
         }}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={onDrop}
       >
+        {files.length ? (
+          <p className="mx-auto mb-2 max-w-3xl text-xs text-ink-muted">
+            {files.map((file) => file.name).join(" · ")}
+          </p>
+        ) : null}
         <div className="mx-auto flex max-w-3xl items-end gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.parquet,.pq,text/csv"
+            className="hidden"
+            onChange={(event) => {
+              const chosen = event.target.files?.[0];
+              if (chosen) onAttach(chosen);
+              event.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={streaming}
+            className="rounded-xl border border-black/10 px-3 py-2 text-sm text-ink-muted hover:text-ink disabled:opacity-40"
+          >
+            Attach
+          </button>
           <textarea
             value={draft}
             onChange={(event) => onDraft(event.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             rows={2}
-            placeholder="Ask a question about the accounts…"
+            placeholder="Attach a CSV, then ask to train…"
             disabled={streaming}
             className="min-h-[3rem] flex-1 resize-none rounded-xl border border-black/10 bg-paper px-3 py-2 text-sm outline-none focus:border-copper"
           />

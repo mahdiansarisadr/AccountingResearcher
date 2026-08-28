@@ -1,7 +1,7 @@
 """The job RQ executes: run the agent, publish what it emits, record how it ended.
 
 This module is the seam between the queue and the agent. It contains no agent
-logic — that lives in accounting_research.agent.runner — and no HTTP concerns.
+logic — that lives in mleng.agent.runner — and no HTTP concerns.
 """
 
 from __future__ import annotations
@@ -12,26 +12,15 @@ from uuid import UUID
 
 import app_db
 import run_bus
-from accounting_research.agent.events import Done, Error
-from accounting_research.agent.runner import run_agent
+from mleng.agent.builder import build_agent
+from mleng.agent.events import Done, Error
+from mleng.agent.runner import run_agent
+from mleng.core.workspace import reset_run_context, set_run_context
 from redis import Redis
 
 from .settings import get_worker_settings
 
 logger = logging.getLogger("worker.tasks")
-
-# Built once per worker process and reused across jobs. Construction is cheap but
-# not free, and a run has a latency budget to respect.
-_agent: Any | None = None
-
-
-def _get_agent() -> Any:
-    global _agent
-    if _agent is None:
-        from accounting_research.agent.builder import build_agent
-
-        _agent = build_agent()
-    return _agent
 
 
 def execute_run(
@@ -94,35 +83,41 @@ def execute_run(
             run_bus.publish(redis, run_id, Done(run_id=run_id, status="cancelled"))
             return app_db.RunStatus.CANCELLED.value
 
-        outcome = app_db.RunStatus.FAILED
-        error: str | None = None
-        answer: Any | None = None
+        with app_db.session_scope(settings.database_url) as session:
+            record = app_db.get_run(session, run_uuid)
+            if record is None:
+                raise RuntimeError(f"run {run_id} has no record")
+            user_id = str(record.user_id)
+            thread_id = str(record.thread_id)
 
-        for event in run_agent(
-            message,
-            history=history,
-            run_id=run_id,
-            agent=_get_agent(),
-            is_cancelled=lambda: run_bus.cancel_requested(redis, run_id),
-        ):
-            if event.type == "answer":
-                answer = event.answer
-            if event.type == "error":
-                # The runner reports failure as an error event followed by done.
-                # Keeping the message is what lets the record say why a run
-                # failed rather than only that it did.
-                error = event.message
-            if event.type == "done":
-                outcome = app_db.RunStatus(event.status)
-                # Record the outcome *before* publishing the terminal event. A
-                # client that sees "done" may immediately ask about the run, and
-                # would otherwise be told it is still running.
-                settle(
-                    outcome,
-                    error if outcome is app_db.RunStatus.FAILED else None,
-                    answer if outcome is app_db.RunStatus.SUCCEEDED else None,
-                )
-            run_bus.publish(redis, run_id, event)
+        context = set_run_context(user_id, thread_id)
+        try:
+            agent = build_agent()
+            outcome = app_db.RunStatus.FAILED
+            error: str | None = None
+            answer: Any | None = None
+
+            for event in run_agent(
+                message,
+                history=history,
+                run_id=run_id,
+                agent=agent,
+                is_cancelled=lambda: run_bus.cancel_requested(redis, run_id),
+            ):
+                if event.type == "answer":
+                    answer = event.answer
+                if event.type == "error":
+                    error = event.message
+                if event.type == "done":
+                    outcome = app_db.RunStatus(event.status)
+                    settle(
+                        outcome,
+                        error if outcome is app_db.RunStatus.FAILED else None,
+                        answer if outcome is app_db.RunStatus.SUCCEEDED else None,
+                    )
+                run_bus.publish(redis, run_id, event)
+        finally:
+            reset_run_context(context)
 
         if not settled:
             # run_agent guarantees exactly one done event. If that ever stops

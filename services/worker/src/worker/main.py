@@ -1,6 +1,6 @@
 """Worker entry point: consume queued runs and execute them.
 
-Run:  ar-worker   (or: python -m worker.main)
+Run:  mleng-worker   (or: python -m worker.main)
 """
 
 from __future__ import annotations
@@ -90,10 +90,8 @@ def main() -> None:
     queue = Queue(run_bus.QUEUE_NAME, connection=connection)
 
     # SimpleWorker executes jobs in this process instead of forking one child per
-    # job. That keeps the built agent warm across runs, which matters for the
-    # latency budget, and avoids the fork restrictions that make forking workers
-    # unreliable on macOS. The cost is no per-job process isolation; revisit if a
-    # run is ever able to corrupt process state.
+    # job. Avoids the fork restrictions that make forking workers unreliable on
+    # macOS. Each job builds its own agent bound to that user's workspace.
     worker = SimpleWorker([queue], connection=connection)
     logger.info("consuming queue %r", run_bus.QUEUE_NAME)
 

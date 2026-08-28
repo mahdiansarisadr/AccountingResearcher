@@ -1,0 +1,28 @@
+[project]
+name = "mleng"
+version = "0.1.0"
+description = "MLEng — domain experts build predictive models they can trust"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.0.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "langgraph>=0.6.0",
+    "langsmith>=0.3.0",
+    "mlflow[mcp]>=3.5.1",
+    "pandas>=2.2",
+    "pyarrow>=16.0",
+    "pydantic>=2.7.0",
+    "python-dotenv>=1.0.0",
+    "scikit-learn>=1.5",
+]
+
+[project.scripts]
+mleng-chat = "mleng.interfaces.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mleng"]

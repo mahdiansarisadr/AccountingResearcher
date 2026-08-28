@@ -3,7 +3,7 @@
 # Image for the HTTP API. Build from the REPO ROOT, not this directory:
 #   docker build -f services/api/Dockerfile .
 # A workspace member cannot build alone; it needs uv.lock and its sibling
-# packages/accounting_research.
+# packages/mleng.
 
 FROM python:3.12-slim-bookworm
 
@@ -25,7 +25,7 @@ WORKDIR /app
 # does not invalidate the (slow) dependency install. --no-install-workspace
 # installs third-party deps but skips our own members, which arrive below.
 COPY pyproject.toml uv.lock ./
-COPY packages/accounting_research/pyproject.toml packages/accounting_research/
+COPY packages/mleng/pyproject.toml packages/mleng/
 COPY packages/app_db/pyproject.toml packages/app_db/
 COPY packages/run_bus/pyproject.toml packages/run_bus/
 COPY services/api/pyproject.toml services/api/
@@ -34,11 +34,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-workspace --package api
 
 # Source layer: changes here rebuild only this step and the one after it.
-COPY packages/accounting_research packages/accounting_research
+COPY packages/mleng packages/mleng
 COPY packages/app_db packages/app_db
 COPY packages/run_bus packages/run_bus
 COPY services/api services/api
-COPY test_database_resources test_database_resources
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --package api
 

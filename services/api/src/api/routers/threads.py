@@ -13,12 +13,17 @@ from uuid import UUID, uuid4
 
 import app_db
 import run_bus
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
+from mleng.core.workspace import (
+    delete_thread_uploads,
+    list_uploads,
+    save_upload,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..deps import CurrentUser, QueueDep, RedisDep, SessionDep, SettingsDep
-from ..schemas import MessageResponse, RunResponse, ThreadResponse
+from ..schemas import MessageResponse, RunResponse, ThreadFileResponse, ThreadResponse
 
 logger = logging.getLogger("api.threads")
 
@@ -75,6 +80,7 @@ def delete_thread(
     for run in thread.runs:
         if not run.status.is_terminal:
             run_bus.request_cancel(redis, str(run.id))
+    delete_thread_uploads(str(user.id), str(thread.id))
     app_db.delete_owned_thread(session, thread.id, user.id)
     logger.info("deleted thread %s", thread_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -88,6 +94,45 @@ def list_messages(
     return [
         MessageResponse.of(message) for message in app_db.list_messages(session, thread_id)
     ]
+
+
+@router.get("/{thread_id}/files", response_model=list[ThreadFileResponse])
+def list_thread_files(
+    thread_id: UUID, user: CurrentUser, session: SessionDep
+) -> list[ThreadFileResponse]:
+    _load_thread(session, thread_id, user)
+    return [
+        ThreadFileResponse(name=item.name, size=item.size, modified_at=item.modified_at)
+        for item in list_uploads(str(user.id), str(thread_id))
+    ]
+
+
+@router.post(
+    "/{thread_id}/files",
+    response_model=ThreadFileResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_thread_file(
+    thread_id: UUID,
+    user: CurrentUser,
+    session: SessionDep,
+    settings: SettingsDep,
+    file: UploadFile = File(...),
+) -> ThreadFileResponse:
+    _load_thread(session, thread_id, user)
+    data = await file.read()
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="request too large")
+    try:
+        stored = save_upload(str(user.id), str(thread_id), file.filename or "", data)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    logger.info("uploaded %s on thread %s", stored.name, thread_id)
+    return ThreadFileResponse(
+        name=stored.name, size=stored.size, modified_at=stored.modified_at
+    )
 
 
 @router.post(

@@ -8,6 +8,7 @@ byte that the inner app sends is a byte the client receives.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -21,10 +22,14 @@ logger = logging.getLogger("api.http")
 _EXEMPT_PATHS = frozenset({"/health", "/ready"})
 _JSON_413 = b'{"detail":"request too large"}'
 _JSON_429 = b'{"detail":"too many requests"}'
+_UPLOAD_PATH = re.compile(r"/threads/[^/]+/files/?$")
 
 
 def _path(scope: Scope) -> str:
-    return scope.get("path") or "/"
+    path = scope.get("path") or "/"
+    if "//" in path:
+        path = re.sub(r"/{2,}", "/", path)
+    return path
 
 
 def _client_host(scope: Scope) -> str:
@@ -102,24 +107,38 @@ class RequestContextMiddleware:
 
 
 class RequestSizeLimitMiddleware:
-    """Refuse a body larger than ``max_request_bytes``.
+    """Refuse a body larger than the cap for this route.
 
     Trusts ``Content-Length`` when it is present (browsers and our UI always send
     it) and counts chunks when it is not, so omitting the header is not a way
-    around the cap.
+    around the cap. Dataset uploads use a larger limit than JSON chat bodies.
     """
 
-    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_bytes: int,
+        upload_max_bytes: int | None = None,
+    ) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.upload_max_bytes = upload_max_bytes or max_bytes
+
+    def _limit_for(self, scope: Scope) -> int:
+        path = _path(scope)
+        method = (scope.get("method") or "").upper()
+        if method == "POST" and _UPLOAD_PATH.match(path):
+            return self.upload_max_bytes
+        return self.max_bytes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        max_bytes = self._limit_for(scope)
         declared = _content_length(scope)
-        if declared is not None and declared > self.max_bytes:
+        if declared is not None and declared > max_bytes:
             await _send_json(send, 413, _JSON_413)
             return
 
@@ -131,7 +150,7 @@ class RequestSizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request" and not too_large:
                 received += len(message.get("body") or b"")
-                if received > self.max_bytes:
+                if received > max_bytes:
                     too_large = True
             return message
 

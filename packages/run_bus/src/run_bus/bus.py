@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from accounting_research.agent.events import RunEvent, parse_event
+from mleng.agent.events import RunEvent, parse_event
 from redis import Redis
 
 from .keys import RUN_TTL_SECONDS, cancel_flag, events_stream

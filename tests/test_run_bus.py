@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import run_bus
-from accounting_research.agent.events import Done, RunStarted, Token, ToolCall
+from mleng.agent.events import Done, RunStarted, Token, ToolCall
 
 
 def drain(redis, run_id: str, **kwargs):
@@ -15,7 +15,7 @@ def drain(redis, run_id: str, **kwargs):
 def test_events_come_back_in_the_order_they_were_published(redis) -> None:
     published = [
         RunStarted(seq=0, run_id="r1"),
-        ToolCall(seq=1, name="search_schema", args={"query": "spend"}),
+        ToolCall(seq=1, name="example_tool", args={"query": "spend"}),
         Token(seq=2, text="The"),
         Done(seq=3, run_id="r1", status="succeeded"),
     ]

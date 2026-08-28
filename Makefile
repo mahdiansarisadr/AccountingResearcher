@@ -1,4 +1,4 @@
-# Developer entry points for the Accounting Research Assistant workspace.
+# Developer entry points for the MLEng workspace.
 #
 # The virtualenv deliberately lives OUTSIDE this repo. This checkout sits under
 # ~/Desktop, which macOS syncs to iCloud; the sync daemon sets the UF_HIDDEN
@@ -6,16 +6,16 @@
 # breaks editable installs) and creates "foo 2.py" conflict copies inside
 # site-packages. Keeping the environment out of the synced tree avoids both.
 # Override with: make sync VENV=/some/other/path
-VENV ?= $(HOME)/.venvs/accounting-research
+VENV ?= $(HOME)/.venvs/mleng
 UV := UV_PROJECT_ENVIRONMENT=$(VENV) uv
 PY := $(VENV)/bin/python
 
 ALEMBIC := $(UV) run --no-sync alembic -c services/api/alembic.ini
 
-.PHONY: help sync up down ps logs seed catalog chat api worker frontend health doctor \
+.PHONY: help sync up down ps logs chat api worker frontend health doctor \
         clean-venv build stack stack-down stack-logs stack-migrate test \
         migrate migrate-down migrate-status migration migrate-check \
-        prod-build prod-up prod-down prod-logs prod-migrate prod-seed prod-catalog
+        prod-build prod-up prod-down prod-logs prod-migrate
 
 help:
 	@echo "Environment"
@@ -27,14 +27,11 @@ help:
 	@echo "  make build       Build the api, worker and frontend images"
 	@echo "  make stack       Run everything in containers (adds api + worker + frontend)"
 	@echo "  make stack-down  Stop the full stack"
-	@echo "  make stack-logs  Follow api + worker + frontend logs"
+	@echo "  make stack-logs  Follow api + worker + frontend output"
 	@echo "  make stack-migrate  Apply from inside the api container"
-	@echo "Production (needs PUBLIC_HOST, e.g. research.example.com)"
+	@echo "Production (needs PUBLIC_HOST, e.g. mleng.example.com)"
 	@echo "  make prod-build / prod-up / prod-down / prod-logs"
-	@echo "  make prod-migrate / prod-seed / prod-catalog"
-	@echo "Data"
-	@echo "  make seed        Load synthetic accounting data"
-	@echo "  make catalog     Build the schema catalog used for table selection"
+	@echo "  make prod-migrate"
 	@echo "Migrations (application schema)"
 	@echo "  make migrate         Apply pending migrations"
 	@echo "  make migrate-down    Revert the last migration"
@@ -57,7 +54,7 @@ sync:
 # Fails loudly if editable installs are not importable, which is the symptom
 # every environment problem in this project has surfaced as.
 doctor:
-	@$(PY) -c "import accounting_research, run_bus, api, worker; print('env OK:', '$(VENV)')"
+	@$(PY) -c "import mleng, run_bus, api, worker; print('env OK:', '$(VENV)')"
 
 clean-venv:
 	rm -rf $(VENV)
@@ -96,11 +93,11 @@ stack-migrate:
 COMPOSE_PROD := docker compose -f docker-compose.prod.yml
 
 prod-build:
-	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-build PUBLIC_HOST=research.example.com'; exit 1; }
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-build PUBLIC_HOST=mleng.example.com'; exit 1; }
 	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) build
 
 prod-up:
-	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-up PUBLIC_HOST=research.example.com'; exit 1; }
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-up PUBLIC_HOST=mleng.example.com'; exit 1; }
 	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) up -d
 
 prod-down:
@@ -110,16 +107,8 @@ prod-logs:
 	$(COMPOSE_PROD) logs -f api worker frontend caddy
 
 prod-migrate:
-	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-migrate PUBLIC_HOST=research.example.com'; exit 1; }
+	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required, e.g. make prod-migrate PUBLIC_HOST=mleng.example.com'; exit 1; }
 	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) run --rm api alembic -c /app/services/api/alembic.ini upgrade head
-
-prod-seed:
-	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required'; exit 1; }
-	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) run --rm api ar-seed
-
-prod-catalog:
-	@test -n "$(PUBLIC_HOST)" || { echo 'PUBLIC_HOST is required'; exit 1; }
-	PUBLIC_HOST=$(PUBLIC_HOST) $(COMPOSE_PROD) run --rm api ar-catalog
 
 migrate:
 	$(ALEMBIC) upgrade head
@@ -144,20 +133,14 @@ migration:
 test:
 	$(UV) run --no-sync pytest
 
-seed:
-	$(UV) run --no-sync ar-seed
-
-catalog:
-	$(UV) run --no-sync ar-catalog
-
 chat:
-	$(UV) run --no-sync ar-chat
+	$(UV) run --no-sync mleng-chat
 
 api:
 	$(UV) run --no-sync uvicorn api.main:app --reload --port 8000
 
 worker:
-	$(UV) run --no-sync ar-worker
+	$(UV) run --no-sync mleng-worker
 
 frontend:
 	npm --prefix services/frontend run dev

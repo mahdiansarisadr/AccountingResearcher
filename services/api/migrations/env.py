@@ -31,12 +31,8 @@ def _database_url() -> str:
 
 
 def _include_name(name: str | None, type_: str, _parent_names: dict) -> bool:
-    """Confine autogenerate to the application schema.
-
-    This database also holds the demo accounting tables in ``public``, and those
-    are not described by any model. Without this filter, ``--autogenerate`` would
-    compare them against empty metadata and cheerfully propose dropping every
-    one of them.
+    """Confine autogenerate to the ``app`` schema so unrelated tables in
+    ``public`` are never proposed for drop.
     """
     if type_ == "schema":
         return name == app_db.SCHEMA
@@ -44,7 +40,7 @@ def _include_name(name: str | None, type_: str, _parent_names: dict) -> bool:
 
 
 # Shared by both modes: which schema owns the table Alembic stamps, and the
-# filter that keeps autogenerate away from the demo data.
+# filter that keeps autogenerate away from anything outside ``app``.
 _CONTEXT_OPTIONS = {
     "target_metadata": target_metadata,
     "version_table_schema": app_db.SCHEMA,

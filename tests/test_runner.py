@@ -8,10 +8,8 @@ model, no key and no database.
 
 from __future__ import annotations
 
-import json
-
 import pytest
-from accounting_research.agent.runner import run_agent
+from mleng.agent.runner import run_agent
 
 from .doubles import (
     ExplodingAgent,
@@ -23,7 +21,7 @@ from .doubles import (
 )
 
 
-def events_of(agent, message: str = "How much did Finance spend?", **kwargs):
+def events_of(agent, message: str = "What should I predict?", **kwargs):
     return list(run_agent(message, agent=agent, run_id="run-1", **kwargs))
 
 
@@ -67,12 +65,12 @@ def test_tokens_carry_the_answer_text_not_its_json_envelope() -> None:
 
 
 def test_tool_calls_and_results_are_reported_as_they_complete() -> None:
-    user = FakeMessage(type="human", content="How much did Finance spend?")
+    user = FakeMessage(type="human", content="What should I predict?")
     call = FakeMessage(
-        type="ai", tool_calls=[{"name": "search_schema", "args": {"query": "spend"}}]
+        type="ai", tool_calls=[{"name": "example_tool", "args": {"query": "spend"}}]
     )
     result = FakeMessage(
-        type="tool", name="search_schema", content="Table: expenses\nTable: budgets\n"
+        type="tool", name="example_tool", content="ok"
     )
     agent = FakeAgent(
         [
@@ -85,32 +83,19 @@ def test_tool_calls_and_results_are_reported_as_they_complete() -> None:
     events = events_of(agent)
 
     tool_call = next(e for e in events if e.type == "tool_call")
-    assert tool_call.name == "search_schema"
+    assert tool_call.name == "example_tool"
     assert tool_call.args == {"query": "spend"}
 
     tool_result = next(e for e in events if e.type == "tool_result")
     assert tool_result.ok is True
-    # Summarised, never the payload: a result can be thousands of rows.
-    assert tool_result.summary == "2 candidate tables"
-
-
-def test_a_query_result_is_summarised_by_shape() -> None:
-    payload = json.dumps({"columns": ["dept", "total"], "rows": [["Finance", 5], ["HR", 3]]})
-    user = FakeMessage(type="human")
-    result = FakeMessage(type="tool", name="run_sql_query", content=payload)
-    agent = FakeAgent(
-        [state_chunk([user, result]), state_chunk([user, result], structured=make_answer())]
-    )
-
-    tool_result = next(e for e in events_of(agent) if e.type == "tool_result")
-
-    assert tool_result.summary == "2 rows x 2 columns"
+    # Summarised, never the payload.
+    assert tool_result.summary == "2 chars"
 
 
 def test_a_failing_tool_is_reported_as_not_ok() -> None:
     user = FakeMessage(type="human")
     result = FakeMessage(
-        type="tool", name="run_sql_query", content="ERROR: relation does not exist"
+        type="tool", name="example_tool", content="ERROR: relation does not exist"
     )
     agent = FakeAgent(
         [state_chunk([user, result]), state_chunk([user, result], structured=make_answer())]
@@ -130,7 +115,7 @@ def test_history_is_not_replayed_as_new_events() -> None:
         {"role": "assistant", "content": "earlier answer"},
     ]
     prior = [FakeMessage(type="human"), FakeMessage(type="ai"), FakeMessage(type="human")]
-    fresh = FakeMessage(type="tool", name="search_schema", content="Table: expenses\n")
+    fresh = FakeMessage(type="tool", name="example_tool", content="ok")
     agent = FakeAgent(
         [
             state_chunk([*prior, fresh]),

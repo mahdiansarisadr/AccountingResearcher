@@ -4,10 +4,6 @@ The first application table. Until now a run existed only in Redis, which
 expires an hour after the run ends; this makes the outcome of a run durable and
 answerable after a restart.
 
-Deliberately no grant to ``ar_readonly``: the agent's SQL tool must never be
-able to read application state, and withholding ``USAGE`` on this schema is what
-enforces that in Postgres rather than in a prompt.
-
 Revision ID: 0001
 Revises:
 """

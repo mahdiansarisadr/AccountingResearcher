@@ -1,4 +1,4 @@
-import { ApiError, type Message, type Run, type Thread, type User, type UserRole } from "./types";
+import { ApiError, type Message, type Run, type Thread, type ThreadFile, type User, type UserRole } from "./types";
 
 // In production Caddy serves UI and API on one host, so this is https://{PUBLIC_HOST}.
 // `??` only falls through on null/undefined; an explicit empty string means same-origin.
@@ -58,6 +58,30 @@ export function deleteThread(threadId: string): Promise<void> {
 
 export function listMessages(threadId: string): Promise<Message[]> {
   return request(`/threads/${threadId}/messages`);
+}
+
+export function listThreadFiles(threadId: string): Promise<ThreadFile[]> {
+  return request(`/threads/${threadId}/files`);
+}
+
+export async function uploadThreadFile(
+  threadId: string,
+  file: File,
+): Promise<ThreadFile> {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(`${API_URL}/threads/${threadId}/files`, {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail =
+      typeof payload?.detail === "string" ? payload.detail : response.statusText;
+    throw new ApiError(response.status, detail);
+  }
+  return payload as ThreadFile;
 }
 
 export function startRun(threadId: string, message: string): Promise<Run> {

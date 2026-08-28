@@ -10,10 +10,6 @@ attribute them to — no user existed before this revision, so no run in the tab
 can belong to anyone. Making the column nullable to preserve a handful of
 pre-authentication rows would trade a permanent ambiguity for throwaway history.
 
-Deliberately no grant to ``ar_readonly``: this is the revision that puts email
-addresses in the database, and the agent's SQL tool must never be able to reach
-them. Withholding ``USAGE`` on this schema is what enforces that.
-
 Revision ID: 0002
 Revises: 0001
 """

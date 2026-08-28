@@ -19,6 +19,10 @@ __pycache__/
 .venv/
 venv/
 
+# User datasets and per-user MLflow file stores
+/data/
+data/
+
 # Node
 node_modules/
 .next/

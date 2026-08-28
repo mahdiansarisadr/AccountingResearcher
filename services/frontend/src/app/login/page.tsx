@@ -19,7 +19,7 @@ export default function LoginPage() {
       <div className="w-full max-w-md rounded-2xl bg-paper-raised p-10 shadow-sm ring-1 ring-black/5">
         <p className="text-xs uppercase tracking-[0.2em] text-ink-faint">Internal</p>
         <h1 className="mt-3 font-serif text-3xl leading-tight">
-          Accounting Research Assistant
+          MLEng
         </h1>
         <p className="mt-3 text-sm leading-6 text-ink-muted">
           Sign in with your company Google account. Access is restricted to that

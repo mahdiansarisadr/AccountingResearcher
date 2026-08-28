@@ -1,7 +1,6 @@
 """Tables in the application schema.
 
-``users``, ``threads``, ``messages`` and ``runs``. Application state lives here;
-the accounting data the agent queries lives in ``public``.
+``users``, ``threads``, ``messages`` and ``runs``. Application state lives here.
 """
 
 from __future__ import annotations
@@ -182,9 +181,9 @@ class Message(Base):
         _enum_column(MessageRole, "message_role"), nullable=False
     )
 
-    # The text a later turn, or a UI, actually reads. Structured extras (citations,
-    # SQL, confidence) sit in payload so they can be shown without being stuffed
-    # into this string.
+    # The text a later turn, or a UI, actually reads. Structured extras
+    # (confidence, abstention) sit in payload so they can be shown without being
+    # stuffed into this string.
     content: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict | None] = mapped_column(JSON, default=None)
 

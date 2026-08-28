@@ -58,8 +58,16 @@ class ThreadResponse(BaseModel):
         )
 
 
+class ThreadFileResponse(BaseModel):
+    """A dataset uploaded onto a conversation."""
+
+    name: str
+    size: int
+    modified_at: datetime
+
+
 class MessageResponse(BaseModel):
-    """One persisted turn. ``payload`` carries citations and SQL when present."""
+    """One persisted turn. ``payload`` carries structured extras when present."""
 
     id: UUID
     role: app_db.MessageRole

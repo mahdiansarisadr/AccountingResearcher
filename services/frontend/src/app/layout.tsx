@@ -17,8 +17,8 @@ const serif = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "Accounting Research Assistant",
-  description: "Ask grounded questions of the accounting store.",
+  title: "MLEng",
+  description: "Build predictive models you can trust.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

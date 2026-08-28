@@ -19,7 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
-COPY packages/accounting_research/pyproject.toml packages/accounting_research/
+COPY packages/mleng/pyproject.toml packages/mleng/
 COPY packages/app_db/pyproject.toml packages/app_db/
 COPY packages/run_bus/pyproject.toml packages/run_bus/
 COPY services/api/pyproject.toml services/api/
@@ -27,11 +27,10 @@ COPY services/worker/pyproject.toml services/worker/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-workspace --package worker
 
-COPY packages/accounting_research packages/accounting_research
+COPY packages/mleng packages/mleng
 COPY packages/app_db packages/app_db
 COPY packages/run_bus packages/run_bus
 COPY services/worker services/worker
-COPY test_database_resources test_database_resources
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --package worker
 
@@ -40,4 +39,4 @@ USER app
 
 # No HEALTHCHECK: the worker exposes no endpoint, and its real liveness signal
 # (jobs being consumed) does not exist until Phase 1.
-CMD ["ar-worker"]
+CMD ["mleng-worker"]

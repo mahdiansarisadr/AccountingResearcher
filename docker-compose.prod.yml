@@ -1,27 +1,26 @@
 # Production stack. Does not replace docker-compose.yml — that file stays the
 # local developer loop (published Postgres/Redis, bind-mounts, --reload).
 #
-#   PUBLIC_HOST=research.example.com docker compose -f docker-compose.prod.yml up -d
+#   PUBLIC_HOST=mleng.example.com docker compose -f docker-compose.prod.yml up -d
 #
 # Caddy terminates TLS (Let's Encrypt when PUBLIC_HOST is a real DNS name) and
 # serves the UI and API on the same host. Postgres and Redis are not published.
 # Set SESSION_SECRET, Google credentials, and a non-default POSTGRES_PASSWORD
 # in .env before this is reachable from the internet.
 
-name: ar-prod
+name: mleng-prod
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-ar_admin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ar_admin}
-      POSTGRES_DB: ${POSTGRES_DB:-accounting}
+      POSTGRES_USER: ${POSTGRES_USER:-mleng}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mleng}
+      POSTGRES_DB: ${POSTGRES_DB:-mleng}
     volumes:
-      - ar_pgdata:/var/lib/postgresql/data
-      - ./test_database_resources/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mleng_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ar_admin} -d ${POSTGRES_DB:-accounting}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mleng} -d ${POSTGRES_DB:-mleng}"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -31,7 +30,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - ar_redisdata:/data
+      - mleng_redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -47,15 +46,15 @@ services:
     environment:
       ENVIRONMENT: production
       PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST is required (the DNS name Caddy serves)}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mleng}:${POSTGRES_PASSWORD:-mleng}@postgres:5432/${POSTGRES_DB:-mleng}
       REDIS_URL: redis://redis:6379/0
-      AR_DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
-      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/${POSTGRES_DB:-accounting}
-      AR_DB_RESOURCES_DIR: /app/test_database_resources
+      MLENG_DATA_DIR: /app/data
       OAUTH_REDIRECT_URL: https://${PUBLIC_HOST}/auth/callback
       POST_LOGIN_REDIRECT: https://${PUBLIC_HOST}
       CORS_ORIGINS: https://${PUBLIC_HOST}
       DEV_LOGIN_ENABLED: "false"
+    volumes:
+      - mleng_userdata:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,11 +80,11 @@ services:
     env_file: .env
     environment:
       ENVIRONMENT: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mleng}:${POSTGRES_PASSWORD:-mleng}@postgres:5432/${POSTGRES_DB:-mleng}
       REDIS_URL: redis://redis:6379/0
-      AR_DATABASE_URL: postgresql://${POSTGRES_USER:-ar_admin}:${POSTGRES_PASSWORD:-ar_admin}@postgres:5432/${POSTGRES_DB:-accounting}
-      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/${POSTGRES_DB:-accounting}
-      AR_DB_RESOURCES_DIR: /app/test_database_resources
+      MLENG_DATA_DIR: /app/data
+    volumes:
+      - mleng_userdata:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,7 +124,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  ar_pgdata:
-  ar_redisdata:
+  mleng_pgdata:
+  mleng_redisdata:
+  mleng_userdata:
   caddy_data:
   caddy_config:

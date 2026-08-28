@@ -20,8 +20,9 @@ from .doubles import ExplodingAgent, FakeAgent, make_answer, state_chunk, token_
 
 
 @pytest.fixture
-def wired(session, redis, monkeypatch):
+def wired(session, redis, monkeypatch, tmp_path):
     """Point the job at the in-process Redis and the test's transaction."""
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(tasks, "Redis", SimpleNamespace(from_url=lambda _url: redis))
     monkeypatch.setattr(app_db, "session_scope", lambda _url: nullcontext(session))
     return monkeypatch
@@ -31,8 +32,8 @@ def wired(session, redis, monkeypatch):
 def execute(wired):
     """Run the job against a given agent, so each test scripts one behaviour."""
 
-    def run(agent: Any, run_id, message: str = "How much did Finance spend?", **kwargs):
-        wired.setattr(tasks, "_get_agent", lambda: agent)
+    def run(agent: Any, run_id, message: str = "Train a model on this file.", **kwargs):
+        wired.setattr(tasks, "build_agent", lambda **_kw: agent)
         return tasks.execute_run(str(run_id), message, **kwargs)
 
     return run
@@ -155,10 +156,10 @@ def test_a_failure_outside_the_agent_still_ends_the_stream(
     def broken_build() -> Any:
         raise RuntimeError("no API key configured")
 
-    wired.setattr(tasks, "_get_agent", broken_build)
+    wired.setattr(tasks, "build_agent", broken_build)
 
     with pytest.raises(RuntimeError):
-        tasks.execute_run(str(run_id), "How much did Finance spend?")
+        tasks.execute_run(str(run_id), "Train a model on this file.")
 
     run = reload(session, run_id)
     assert run.status is app_db.RunStatus.FAILED

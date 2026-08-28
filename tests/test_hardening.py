@@ -44,6 +44,20 @@ def test_an_oversized_body_is_refused(anonymous) -> None:
     assert response.json()["detail"] == "request too large"
 
 
+def test_a_dataset_upload_is_not_capped_like_json() -> None:
+    app = create_app(production_settings())
+    csv = b"a,b\n" + b"1,2\n" * 20_000
+    assert len(csv) > 64 * 1024
+
+    with TestClient(app, base_url="https://research.example.test") as client:
+        response = client.post(
+            "/threads/00000000-0000-0000-0000-000000000001/files",
+            files={"file": ("data.csv", csv, "text/csv")},
+        )
+
+    assert response.status_code != 413
+
+
 def test_requests_over_the_rate_limit_are_refused(api_app, api_settings, redis) -> None:
     capped = api_settings.model_copy(update={"rate_limit_requests": 2, "rate_limit_window_seconds": 60})
     app = create_app(capped)

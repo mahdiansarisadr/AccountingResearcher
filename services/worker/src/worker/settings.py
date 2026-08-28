@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class WorkerSettings(BaseSettings):
-    # extra="ignore" so the shared .env can also hold the agent's AR_* keys.
+    # extra="ignore" so the shared .env can also hold the agent's MLENG_* keys.
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -19,7 +19,7 @@ class WorkerSettings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     # The application schema, where the worker records what became of each run.
     # The same DATABASE_URL the API and Alembic use.
-    database_url: str = "postgresql://ar_admin:ar_admin@localhost:5433/accounting"
+    database_url: str = "postgresql://mleng:mleng@localhost:5433/mleng"
 
     environment: str = "development"
 

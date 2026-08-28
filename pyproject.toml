@@ -1,12 +1,12 @@
 [project]
-name = "accounting-workspace"
+name = "mleng-workspace"
 version = "0.0.0"
-description = "Workspace root for the Accounting Research Assistant (agent + services)."
+description = "Workspace root for MLEng (agent + services)."
 requires-python = ">=3.11"
 # Depend on the workspace members so `uv sync` / `uv run` keep them installed in
 # the shared environment (the root itself is not a shipped package).
 dependencies = [
-    "accounting-research",
+    "mleng",
     "app-db",
     "run-bus",
     "api",
@@ -30,7 +30,7 @@ dev = [
 members = ["packages/*", "services/api", "services/worker"]
 
 [tool.uv.sources]
-accounting-research = { workspace = true }
+mleng = { workspace = true }
 app-db = { workspace = true }
 run-bus = { workspace = true }
 api = { workspace = true }

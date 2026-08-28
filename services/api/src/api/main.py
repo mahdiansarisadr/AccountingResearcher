@@ -37,7 +37,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     # it is an unauthenticated description of the attack surface.
     docs = None if settings.is_production else "/docs"
     app = FastAPI(
-        title="Accounting Research Assistant API",
+        title="MLEng API",
         version=__version__,
         docs_url=docs,
         redoc_url=None if settings.is_production else "/redoc",
@@ -64,7 +64,11 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         settings=settings,
         redis_factory=lambda: app.state.redis_factory(),
     )
-    app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.max_request_bytes)
+    app.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_bytes=settings.max_request_bytes,
+        upload_max_bytes=settings.max_upload_bytes,
+    )
     app.add_middleware(RequestContextMiddleware, settings=settings)
 
     if settings.is_production and settings.public_host:

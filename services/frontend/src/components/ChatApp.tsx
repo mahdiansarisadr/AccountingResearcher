@@ -7,19 +7,24 @@ import {
   createThread,
   deleteThread,
   listMessages,
+  listThreadFiles,
   listThreads,
   startRun,
+  uploadThreadFile,
 } from "@/lib/api";
 import { streamRun } from "@/lib/sse";
-import { ApiError, type Message, type Thread, type User } from "@/lib/types";
+import { ApiError, type Message, type Thread, type ThreadFile, type User } from "@/lib/types";
 
 import { AppHeader } from "./AppHeader";
 import { ChatPane, type LiveTurn } from "./ChatPane";
 import { ThreadSidebar } from "./ThreadSidebar";
 
 function describeTool(name: string): string {
-  if (name === "search_schema") return "Selecting tables…";
-  if (name === "run_sql_query") return "Running SQL…";
+  if (name === "profile_dataset") return "Profiling dataset…";
+  if (name === "train_model") return "Training model…";
+  if (name.startsWith("search_") || name.includes("trace") || name.includes("run")) {
+    return `MLflow: ${name}`;
+  }
   return name;
 }
 
@@ -27,6 +32,7 @@ export function ChatApp({ user }: { user: User }) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [files, setFiles] = useState<ThreadFile[]>([]);
   const [draft, setDraft] = useState("");
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -49,6 +55,7 @@ export function ChatApp({ user }: { user: User }) {
   async function openThread(id: string) {
     setSelectedId(id);
     setMessages(await listMessages(id));
+    setFiles(await listThreadFiles(id).catch(() => []));
     setLive(null);
   }
 
@@ -67,6 +74,7 @@ export function ChatApp({ user }: { user: User }) {
       else {
         setSelectedId(null);
         setMessages([]);
+        setFiles([]);
       }
     }
   }
@@ -74,6 +82,12 @@ export function ChatApp({ user }: { user: User }) {
   async function onSend() {
     const text = draft.trim();
     if (!text || streaming) return;
+
+    if (text.length > 4_000) {
+      setDraft("");
+      await onAttach(new File([text], "pasted.csv", { type: "text/csv" }));
+      return;
+    }
 
     let threadId = selectedId;
     if (!threadId) {
@@ -130,6 +144,37 @@ export function ChatApp({ user }: { user: User }) {
     }
   }
 
+  async function onAttach(file: File) {
+    let threadId = selectedId;
+    if (!threadId) {
+      const thread = await createThread();
+      threadId = thread.id;
+      setSelectedId(threadId);
+      await refreshThreads();
+    }
+    setBusy(true);
+    try {
+      await uploadThreadFile(threadId, file);
+      setFiles(await listThreadFiles(threadId));
+    } catch (error) {
+      const message =
+        error instanceof ApiError && error.status === 413
+          ? "File is too large (max 25 MB). Attach a CSV or Parquet file — don’t paste the table into the chat."
+          : error instanceof ApiError
+            ? error.message
+            : "Could not upload the file.";
+      setLive({
+        question: `Uploaded ${file.name}`,
+        tokens: "",
+        answer: null,
+        tools: [],
+        error: message,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onCancel() {
     if (!runId) return;
     await cancelRun(runId).catch(() => undefined);
@@ -154,8 +199,10 @@ export function ChatApp({ user }: { user: User }) {
           onDraft={setDraft}
           onSend={() => void onSend()}
           onCancel={() => void onCancel()}
+          onAttach={(file) => void onAttach(file)}
+          files={files}
           streaming={streaming}
-          emptyHint="Ask a question. Answers are grounded in the accounting store, and cited."
+          emptyHint="Upload a CSV, then ask me to train a model — or just chat."
         />
       </div>
     </div>

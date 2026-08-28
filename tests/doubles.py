@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
-from accounting_research.agent.schemas import AgentAnswer
+from mleng.agent.schemas import AgentAnswer
 from langchain_core.messages import AIMessageChunk
 
 

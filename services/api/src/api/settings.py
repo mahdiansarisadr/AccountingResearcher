@@ -25,7 +25,7 @@ _CONSUMER_GOOGLE_DOMAINS = frozenset({"gmail.com", "googlemail.com", "google.com
 
 
 class ApiSettings(BaseSettings):
-    # extra="ignore" so the shared .env can also hold the agent's AR_* keys.
+    # extra="ignore" so the shared .env can also hold the agent's MLENG_* keys.
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -34,7 +34,7 @@ class ApiSettings(BaseSettings):
 
     # Defaults target local development (host ports from docker-compose).
     # In Compose, these are overridden with service hostnames (postgres, redis).
-    database_url: str = "postgresql://ar_admin:ar_admin@localhost:5433/accounting"
+    database_url: str = "postgresql://mleng:mleng@localhost:5433/mleng"
     redis_url: str = "redis://localhost:6379/0"
 
     environment: str = "development"
@@ -42,12 +42,12 @@ class ApiSettings(BaseSettings):
     # Seconds a readiness probe waits on a dependency before calling it down.
     probe_timeout: float = 2.0
 
-    # Ceiling on a single run before the queue abandons it. Generous next to the
-    # ~10s target so a slow-but-working run is not killed, while a wedged one is.
-    run_timeout_seconds: int = 120
+    # Ceiling on a single run before the queue abandons it. Training a model
+    # can take a few minutes; a wedged job is still killed.
+    run_timeout_seconds: int = 600
 
     # How long a stream waits with no events before telling the client to stop.
-    stream_idle_timeout_seconds: float = 150.0
+    stream_idle_timeout_seconds: float = 700.0
 
     # --- Google sign-in ---
     # Empty by default so the service still boots (and /health still answers)
@@ -69,7 +69,7 @@ class ApiSettings(BaseSettings):
     initial_admin_email: str = ""
 
     # --- Session ---
-    session_cookie_name: str = "ar_session"
+    session_cookie_name: str = "mleng_session"
     session_ttl_seconds: int = 7 * 24 * 60 * 60
 
     # Signs the session cookie. Deliberately has no default: a committed
@@ -98,9 +98,12 @@ class ApiSettings(BaseSettings):
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
 
-    # Ceiling on an incoming body. Chat messages are already capped at 4_000
-    # characters; this is the backstop for anything that is not that route.
+    # Ceiling on an incoming JSON body. Chat messages are already capped at
+    # 4_000 characters; this is the backstop for anything that is not an upload.
     max_request_bytes: int = 64 * 1024
+
+    # Dataset uploads are larger; applied only to POST /threads/{id}/files.
+    max_upload_bytes: int = 25 * 1024 * 1024
 
     # Queued + running, across every thread. Stops one account filling the queue.
     max_concurrent_runs_per_user: int = 3

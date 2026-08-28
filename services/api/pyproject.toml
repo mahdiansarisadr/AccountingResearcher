@@ -1,14 +1,14 @@
 [project]
 name = "api"
 version = "0.1.0"
-description = "HTTP API for the Accounting Research Assistant"
+description = "HTTP API for MLEng"
 requires-python = ">=3.11"
 dependencies = [
-    # Workspace cross-link: the API runs the agent in-process (Phase 1 onward).
-    "accounting-research",
+    # Workspace cross-link: the API shares the agent's event contract.
+    "mleng",
     # Models and sessions for the application schema (run records).
     "app-db",
-    "fastapi>=0.115",
+    "python-multipart>=0.0.9",
     "uvicorn[standard]>=0.30",
     "pydantic-settings>=2.4",
     "psycopg[binary]>=3.2",
@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-accounting-research = { workspace = true }
+mleng = { workspace = true }
 app-db = { workspace = true }
 run-bus = { workspace = true }
 

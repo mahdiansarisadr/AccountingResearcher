@@ -18,19 +18,11 @@ export type Thread = {
   updated_at: string;
 };
 
-export type Citation = {
-  source_file: string;
-  locator: string;
-  snippet: string | null;
-};
-
 export type AgentAnswer = {
   answer: string;
   confidence: number;
   abstained: boolean;
   reason: string | null;
-  citations: Citation[];
-  sql_used: string | null;
 };
 
 export type Message = {
@@ -39,6 +31,12 @@ export type Message = {
   content: string;
   payload: AgentAnswer | Record<string, unknown> | null;
   created_at: string;
+};
+
+export type ThreadFile = {
+  name: string;
+  size: number;
+  modified_at: string;
 };
 
 export type Run = {

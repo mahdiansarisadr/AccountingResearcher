@@ -1,18 +1,9 @@
 """Declarative base for the application schema.
 
-Application state lives in its own ``app`` schema, separate from the ``public``
-schema holding the demo accounting data. That separation is a security boundary,
-not tidiness:
-
-- ``ar-seed`` finishes with ``GRANT SELECT ON ALL TABLES IN SCHEMA public TO
-  ar_readonly``. Application tables in ``public`` would be handed to the agent's
-  read-only role on every seed — which, once users exist, means the agent's SQL
-  tool could read email addresses.
-- ``ar_readonly`` is never granted ``USAGE`` on ``app``, so Postgres refuses
-  those queries outright rather than relying on the agent behaving.
-
-The table-selection catalog only describes ``public``, so application tables are
-also never offered to the model as query targets.
+Application state lives in its own ``app`` schema, separate from ``public``.
+Keeping users, threads, messages and runs out of ``public`` means they are never
+the default search path for ad-hoc connections, and Alembic can confine
+autogenerate to this schema alone.
 """
 
 from __future__ import annotations

@@ -5,12 +5,12 @@ description = "Redis transport for agent run events, shared by the API and the w
 requires-python = ">=3.11"
 dependencies = [
     # For the RunEvent contract that travels over the bus.
-    "accounting-research",
+    "mleng",
     "redis>=5.0",
 ]
 
 [tool.uv.sources]
-accounting-research = { workspace = true }
+mleng = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

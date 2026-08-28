@@ -24,6 +24,8 @@ from .conftest import sign_in
         ("get", "/threads/{thread_id}"),
         ("delete", "/threads/{thread_id}"),
         ("get", "/threads/{thread_id}/messages"),
+        ("get", "/threads/{thread_id}/files"),
+        ("post", "/threads/{thread_id}/files"),
         ("post", "/threads/{thread_id}/runs"),
     ],
 )
@@ -80,6 +82,14 @@ def test_a_thread_is_invisible_to_everyone_but_its_owner(
             == 404
         )
         assert intruder.delete(f"/threads/{thread.id}").status_code == 404
+        assert intruder.get(f"/threads/{thread.id}/files").status_code == 404
+        assert (
+            intruder.post(
+                f"/threads/{thread.id}/files",
+                files={"file": ("x.csv", b"a,b\n1,2\n", "text/csv")},
+            ).status_code
+            == 404
+        )
 
 
 def test_messages_survive_as_the_record_of_the_conversation(
@@ -115,3 +125,73 @@ def test_starting_a_run_on_an_unknown_thread_is_not_found(as_member) -> None:
     )
 
     assert response.status_code == 404
+
+
+def test_the_owner_can_upload_a_csv(as_member, thread, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
+    response = as_member.post(
+        f"/threads/{thread.id}/files",
+        files={"file": ("churn.csv", b"label,x\n0,1\n1,2\n", "text/csv")},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["name"] == "churn.csv"
+    listed = as_member.get(f"/threads/{thread.id}/files").json()
+    assert [item["name"] for item in listed] == ["churn.csv"]
+    stored = tmp_path / "users" / str(thread.user_id) / "uploads" / str(thread.id) / "churn.csv"
+    assert stored.is_file()
+
+
+def test_two_users_uploading_the_same_name_stay_apart(
+    api_app, api_settings, session, owner, other_user, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
+    mine = app_db.create_thread(session, owner.id)
+    theirs = app_db.create_thread(session, other_user.id)
+
+    with TestClient(api_app) as member:
+        sign_in(member, owner, api_settings)
+        uploaded = member.post(
+            f"/threads/{mine.id}/files",
+            files={"file": ("data.csv", b"a,b\n1,2\n", "text/csv")},
+        )
+        assert uploaded.status_code == 201
+
+    with TestClient(api_app) as other:
+        sign_in(other, other_user, api_settings)
+        uploaded = other.post(
+            f"/threads/{theirs.id}/files",
+            files={"file": ("data.csv", b"x,y\n9,8\n", "text/csv")},
+        )
+        assert uploaded.status_code == 201
+        listed = other.get(f"/threads/{theirs.id}/files").json()
+        assert [item["name"] for item in listed] == ["data.csv"]
+        assert other.get(f"/threads/{mine.id}/files").status_code == 404
+
+    path_a = tmp_path / "users" / str(owner.id) / "uploads" / str(mine.id) / "data.csv"
+    path_b = (
+        tmp_path / "users" / str(other_user.id) / "uploads" / str(theirs.id) / "data.csv"
+    )
+    assert path_a.read_bytes() == b"a,b\n1,2\n"
+    assert path_b.read_bytes() == b"x,y\n9,8\n"
+
+
+def test_deleting_a_thread_removes_only_that_threads_uploads(
+    as_member, session, owner, thread, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
+    other = app_db.create_thread(session, owner.id)
+    as_member.post(
+        f"/threads/{thread.id}/files",
+        files={"file": ("gone.csv", b"a,b\n1,2\n", "text/csv")},
+    )
+    as_member.post(
+        f"/threads/{other.id}/files",
+        files={"file": ("kept.csv", b"x,y\n9,8\n", "text/csv")},
+    )
+
+    assert as_member.delete(f"/threads/{thread.id}").status_code == 204
+    gone = tmp_path / "users" / str(owner.id) / "uploads" / str(thread.id)
+    kept = tmp_path / "users" / str(owner.id) / "uploads" / str(other.id) / "kept.csv"
+    assert not gone.exists()
+    assert kept.is_file()

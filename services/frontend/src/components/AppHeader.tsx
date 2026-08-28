@@ -17,7 +17,7 @@ export function AppHeader({ user }: { user: User }) {
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-black/10 bg-paper-raised px-4">
       <Link href="/" className="font-serif text-lg tracking-tight">
-        Accounting Research
+        MLEng
       </Link>
       <nav className="flex items-center gap-4 text-sm">
         {user.role === "admin" ? (

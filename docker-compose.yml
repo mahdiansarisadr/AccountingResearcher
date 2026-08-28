@@ -1,32 +1,31 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
-    container_name: ar_postgres
+    image: postgres:16-alpine
+    container_name: mleng_postgres
     environment:
-      POSTGRES_USER: ar_admin
-      POSTGRES_PASSWORD: ar_admin
-      POSTGRES_DB: accounting
+      POSTGRES_USER: mleng
+      POSTGRES_PASSWORD: mleng
+      POSTGRES_DB: mleng
     ports:
       # Host 5433 -> container 5432 (avoids clashing with a local Postgres on 5432)
       - "5433:5432"
     volumes:
-      - ar_pgdata:/var/lib/postgresql/data
-      - ./test_database_resources/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mleng_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ar_admin -d accounting"]
+      test: ["CMD-SHELL", "pg_isready -U mleng -d mleng"]
       interval: 3s
       timeout: 3s
       retries: 20
 
   redis:
     image: redis:7-alpine
-    container_name: ar_redis
+    container_name: mleng_redis
     # appendonly keeps queued jobs across restarts, so runs are not silently lost.
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
     volumes:
-      - ar_redisdata:/data
+      - mleng_redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -43,17 +42,15 @@ services:
       # Repo root: a workspace member needs uv.lock and its sibling packages.
       context: .
       dockerfile: services/api/Dockerfile
-    container_name: ar_api
-    # env_file supplies ANTHROPIC_API_KEY, LANGSMITH_*, and the AR_* agent settings.
+    container_name: mleng_api
+    # env_file supplies ANTHROPIC_API_KEY, LANGSMITH_*, and the MLENG_* agent settings.
     # environment wins over env_file, so the host-facing localhost URLs in .env
     # are replaced here by compose service hostnames on the internal network.
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
+      DATABASE_URL: postgresql://mleng:mleng@postgres:5432/mleng
       REDIS_URL: redis://redis:6379/0
-      AR_DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
-      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/accounting
-      AR_DB_RESOURCES_DIR: /app/test_database_resources
+      MLENG_DATA_DIR: /app/data
       POST_LOGIN_REDIRECT: http://localhost:3000
       CORS_ORIGINS: http://localhost:3000
     ports:
@@ -69,10 +66,10 @@ services:
       # Dev bind-mounts for live reload. Only source trees are mounted; the
       # virtualenv lives at /opt/venv in the image and stays untouched.
       - ./services/api/src:/app/services/api/src:ro
-      - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./packages/mleng/src:/app/packages/mleng/src:ro
       - ./packages/app_db/src:/app/packages/app_db/src:ro
       - ./packages/run_bus/src:/app/packages/run_bus/src:ro
-      - ./test_database_resources:/app/test_database_resources:ro
+      - ./data:/app/data
       # Mounted so a revision written on the host is visible to `make
       # stack-migrate` without rebuilding the image.
       - ./services/api/migrations:/app/services/api/migrations:ro
@@ -87,22 +84,20 @@ services:
       - --reload-dir
       - /app/services/api/src
       - --reload-dir
-      - /app/packages/accounting_research/src
+      - /app/packages/mleng/src
 
   worker:
     profiles: ["apps"]
     build:
       context: .
       dockerfile: services/worker/Dockerfile
-    container_name: ar_worker
+    container_name: mleng_worker
     env_file: .env
     environment:
       # The worker records each run's outcome, so it needs the app schema too.
-      DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
+      DATABASE_URL: postgresql://mleng:mleng@postgres:5432/mleng
       REDIS_URL: redis://redis:6379/0
-      AR_DATABASE_URL: postgresql://ar_admin:ar_admin@postgres:5432/accounting
-      AR_READONLY_DATABASE_URL: postgresql://ar_readonly:ar_readonly@postgres:5432/accounting
-      AR_DB_RESOURCES_DIR: /app/test_database_resources
+      MLENG_DATA_DIR: /app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,10 +105,10 @@ services:
         condition: service_healthy
     volumes:
       - ./services/worker/src:/app/services/worker/src:ro
-      - ./packages/accounting_research/src:/app/packages/accounting_research/src:ro
+      - ./packages/mleng/src:/app/packages/mleng/src:ro
       - ./packages/app_db/src:/app/packages/app_db/src:ro
       - ./packages/run_bus/src:/app/packages/run_bus/src:ro
-      - ./test_database_resources:/app/test_database_resources:ro
+      - ./data:/app/data
     # The worker handles SIGTERM, so give it room to drain instead of the
     # default 10s before Docker escalates to SIGKILL.
     stop_grace_period: 30s
@@ -126,7 +121,7 @@ services:
       args:
         # The browser, not the container, calls the API, so this is the host URL.
         NEXT_PUBLIC_API_URL: http://localhost:8000
-    container_name: ar_frontend
+    container_name: mleng_frontend
     ports:
       - "3000:3000"
     depends_on:
@@ -134,5 +129,5 @@ services:
         condition: service_started
 
 volumes:
-  ar_pgdata:
-  ar_redisdata:
+  mleng_pgdata:
+  mleng_redisdata:

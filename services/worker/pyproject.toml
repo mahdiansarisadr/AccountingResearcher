@@ -5,7 +5,7 @@ description = "Background worker that executes agent runs"
 requires-python = ">=3.11"
 dependencies = [
     # Workspace cross-link: the worker runs the agent in-process.
-    "accounting-research",
+    "mleng",
     # The worker records each run's outcome in the application schema.
     "app-db",
     # Shared Redis conventions for publishing run events.
@@ -17,10 +17,10 @@ dependencies = [
 ]
 
 [project.scripts]
-ar-worker = "worker.main:main"
+mleng-worker = "worker.main:main"
 
 [tool.uv.sources]
-accounting-research = { workspace = true }
+mleng = { workspace = true }
 app-db = { workspace = true }
 run-bus = { workspace = true }
 

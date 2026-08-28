@@ -1,21 +1,20 @@
-# Accounting Research Assistant
+# MLEng
 
-A text-to-SQL AI agent that answers accounting questions over a seeded Postgres
-store. It selects the relevant tables via a pgvector-backed **schema catalog**,
-runs **read-only** SQL, and returns **cited, confidence-scored** answers —
-abstaining rather than guessing. See `docs/PRD.md` (what/why) and `docs/TDD.md`
-(how).
+An agent that lets people who know their domain — but not machine learning —
+upload a table, chat, and train a model. Each account has its own on-disk
+workspace (`data/users/{user_id}/`) for uploads and MLflow runs, so one
+person's files never land in another's.
 
-Runs locally: Postgres + pgvector and Redis in Docker, a FastAPI service, a
-worker, and a Next.js chat UI. The original CLI is still there.
+Runs locally: Postgres and Redis in Docker, a FastAPI service, a worker, and a
+Next.js chat UI. A CLI is still there.
 
 ## Prerequisites
 
-- Docker (for Postgres + pgvector and Redis)
+- Docker (for Postgres and Redis)
 - Python 3.11+
 - Node 22+ (for the chat UI)
 - [`uv`](https://docs.astral.sh/uv/)
-- An Anthropic API key (the agent) and (optional) LangSmith key. Schema embeddings run locally from Hugging Face — no OpenAI key.
+- An Anthropic API key (the agent) and (optional) LangSmith key.
 
 ## Setup
 
@@ -23,31 +22,34 @@ All commands go through `make`, which pins the virtualenv location (see
 [Environment notes](#environment-notes)). Run `make help` for the full list.
 
 ```bash
-# 1. Configure secrets (already copied for local dev)
+# 1. Configure secrets
 cp .env.example .env   # then fill in ANTHROPIC_API_KEY / LANGSMITH_API_KEY
 
 # 2. Install every workspace member into the shared virtualenv
 make sync
 
-# 3. Start Postgres + pgvector and Redis
+# 3. Start Postgres and Redis
 make up
 
-# 4. Seed synthetic accounting data (creates ~10 tables with provenance)
-make seed
-
-# 5. Build the schema catalog (embeddings + full-text index for table selection)
-make catalog
-
-# 6. Create the application tables (users, threads, messages, run records)
+# 4. Create the application tables (users, threads, messages, run records)
 make migrate
 
-# 7. Chat in the terminal, or open the UI
+# 5. Chat in the terminal, or open the UI
 make chat
 make frontend   # http://localhost:3000 — needs make api + make worker too
 ```
 
 The CLI needs none of the sign-in configuration below; it talks to the agent
 directly. Fill that in when you want to use the HTTP API.
+
+In the chat UI, **Attach** a CSV or Parquet file on a conversation, then ask
+the agent to profile it or train. Each signed-in account writes only under
+`data/users/{that user's id}/` (uploads per thread, MLflow in that user's
+`mlflow.db` and `artifacts/`).
+
+If you previously ran the accounting-research stack, recreate the Postgres
+volume (`docker compose down -v` then `make up`) so the new `mleng` database
+user exists.
 
 ## Usage
 
@@ -64,8 +66,7 @@ make test        # run the test suite
 For flags the Makefile does not wrap, call the console scripts directly:
 
 ```bash
-uv run --no-sync ar-chat --ask "..."     # one-shot question
-uv run --no-sync ar-chat --smoke         # run the 3 core question types end-to-end
+uv run --no-sync mleng-chat --ask "..."     # one-shot question
 ```
 
 ### Running everything in containers
@@ -96,14 +97,12 @@ UI and API on the same host. Let's Encrypt issues a certificate when
 
 ```bash
 # On the host, with .env filled in (SESSION_SECRET, Google, ANTHROPIC_API_KEY)
-make prod-build PUBLIC_HOST=research.example.com
-make prod-up PUBLIC_HOST=research.example.com
-make prod-migrate PUBLIC_HOST=research.example.com
-make prod-seed PUBLIC_HOST=research.example.com      # demo data; skip on a real corpus
-make prod-catalog PUBLIC_HOST=research.example.com
+make prod-build PUBLIC_HOST=mleng.example.com
+make prod-up PUBLIC_HOST=mleng.example.com
+make prod-migrate PUBLIC_HOST=mleng.example.com
 ```
 
-Register `https://research.example.com/auth/callback` on the Google OAuth
+Register `https://mleng.example.com/auth/callback` on the Google OAuth
 client. Change `POSTGRES_PASSWORD` in `.env` before the machine is public.
 `SENTRY_DSN` is optional; leave it empty to skip error tracking.
 
@@ -193,13 +192,13 @@ by signing in above.
 ```bash
 # 1. Open a conversation
 curl -b cookies.txt -X POST localhost:8000/threads -H 'content-type: application/json' \
-     -d '{"title":"Audit cases"}'
-# -> {"id":"3a1c...","title":"Audit cases","created_at":"...","updated_at":"..."}
+     -d '{"title":"Churn model"}'
+# -> {"id":"3a1c...","title":"Churn model","created_at":"...","updated_at":"..."}
 
 # 2. Queue a run on it (202 Accepted)
 curl -b cookies.txt -X POST localhost:8000/threads/3a1c.../runs \
      -H 'content-type: application/json' \
-     -d '{"message":"Which audit cases have not been audited yet?"}'
+     -d '{"message":"I want to predict which customers will churn."}'
 # -> {"run_id":"5e7b5c1a-...","thread_id":"3a1c...","status":"queued",...}
 
 # 3. Watch it happen
@@ -232,7 +231,7 @@ payload, and an id:
 
 ```
 event: tool_call
-data: {"seq":1,"type":"tool_call","name":"search_schema","args":{"query":"audit cases not audited"}}
+data: {"seq":1,"type":"tool_call","name":"example_tool","args":{"query":"churn"}}
 
 event: token
 data: {"seq":5,"type":"token","text":"The"}
@@ -241,7 +240,7 @@ event: done
 data: {"seq":442,"type":"done","run_id":"...","status":"succeeded"}
 ```
 
-Event types are defined once in `accounting_research.agent.events` and shared by
+Event types are defined once in `mleng.agent.events` and shared by
 every layer: `run_started`, `tool_call`, `tool_result`, `token`, `answer`,
 `error`, `done`. A run always ends with exactly one `done`, so a client can
 close on it without special-casing failures.
@@ -296,17 +295,11 @@ when it isn't.
 
 ## Database migrations
 
-Two kinds of tables live in this database, and they are managed differently.
-
-The **demo accounting tables** (`expenses`, `invoices`, …) are disposable
-fixtures. They come from `test_database_resources/*.sql` and are rebuilt from
-scratch by `make seed`. Dropping and recreating them is the normal workflow.
-
-The **application tables** (users, threads, messages and run records) hold real
-state, so they get versioned migrations via Alembic. Each
-change is a numbered file, Postgres records which files it has applied in
-`alembic_version`, and `make migrate` applies whatever is missing — so an
-existing database can move forward without being wiped.
+Application tables (users, threads, messages and run records) live in the `app`
+schema and are versioned with Alembic. Each change is a numbered file, Postgres
+records which files it has applied in `alembic_version`, and `make migrate`
+applies whatever is missing — so an existing database can move forward without
+being wiped.
 
 ```bash
 make migration name="add users table"  # autogenerate a revision, then review it
@@ -317,26 +310,9 @@ make migrate-check                     # fail if models and database disagree
 make stack-migrate                     # apply from inside the api container
 ```
 
-They live in **separate schemas**, and that is a security boundary rather than
-tidiness. The demo tables are in `public`; the application tables are in `app`.
-`ar-seed` finishes with `GRANT SELECT ON ALL TABLES IN SCHEMA public TO
-ar_readonly`, so an application table in `public` would be handed to the agent's
-read-only role on every seed — and now that `app.users` exists, that would mean
-the agent's SQL tool could read every email address in the company, at the
-suggestion of anyone who could get a sentence into a prompt. `ar_readonly` is
-never granted `USAGE` on `app`, so Postgres refuses those queries outright:
-
-```
-accounting=> select count(*) from app.users;
-ERROR:  permission denied for schema app
-```
-
-Revisions are generated from the SQLAlchemy models in `app_db` and then reviewed
-— `--autogenerate` sees shape, not intent. Because both schemas share one
-database, `migrations/env.py` confines autogenerate to `app`; without that filter
-it would compare the demo tables against empty metadata and propose dropping
-every one of them. `make migrate-check` is the inverse guard, failing when a
-model has been edited and no migration written for it.
+`migrations/env.py` confines autogenerate to `app`. `make migrate-check` is the
+inverse guard, failing when a model has been edited and no migration written
+for it.
 
 `DATABASE_URL` is read by `migrations/env.py` from `api.settings`, so migrations
 always target the same database the service uses and no credentials sit in
@@ -374,7 +350,7 @@ being of no use to another.
 
 ## Environment notes
 
-The virtualenv lives at `~/.venvs/accounting-research`, **outside** this
+The virtualenv lives at `~/.venvs/mleng`, **outside** this
 checkout, and `make` points `uv` at it via `UV_PROJECT_ENVIRONMENT`.
 
 This is not cosmetic. This repo sits under `~/Desktop`, which macOS syncs to
@@ -389,13 +365,6 @@ Re-run `make sync` after changing dependencies or adding a workspace member.
 Long-running processes use `uv run --no-sync` so an implicit re-sync cannot swap
 packages out from under a live server.
 
-## The three core question types (Phase 1 exit criteria)
-
-1. **Multi-year aggregation** — e.g. "What is the total travel cost for the
-   Finance team over the last 3 years?"
-2. **Trend** — e.g. "What is the monthly spending trend since the start of 2026?"
-3. **Status / exception** — e.g. "Which audit cases have not been audited yet?"
-
 ## Layout
 
 A `uv` workspace: one lockfile and one virtualenv shared by several members.
@@ -404,96 +373,23 @@ A `uv` workspace: one lockfile and one virtualenv shared by several members.
 ```
 Makefile                         Developer entry points (make help)
 pyproject.toml                   Workspace root (members + shared dev deps)
-docker-compose.yml               Postgres + pgvector, Redis, api + worker + frontend (apps profile)
+docker-compose.yml               Postgres, Redis, api + worker + frontend (apps profile)
 docker-compose.prod.yml          Production stack: unpublished DB, Caddy TLS, no reload
 deploy/Caddyfile                 Reverse proxy: same-host UI + API, security headers
-.dockerignore                    Build-context exclusions (shared by both images)
-test_database_resources/         Demo/test database bootstrap (seed-time only)
-  init.sql                       Extension + read-only agent role
-  schema.sql                     Seed table DDL
-  catalog.sql                    schema_catalog DDL
-  tables.yaml                    Authored table/column descriptions (feeds the catalog)
-packages/run_bus/src/run_bus/    Redis transport shared by api + worker
-  keys.py                        Queue name, stream/flag key naming, TTLs
-  bus.py                         Publish, read (blocking), cancel
-packages/app_db/src/app_db/      Postgres persistence shared by api + worker
-  base.py                        Declarative base; the "app" schema boundary
-  models.py                      Tables: users, threads, messages, runs
-  engine.py                      Engine, session factory, transaction scope
-  runs.py                        Guarded lifecycle transitions; owner-scoped reads
-  users.py                       Accounts, roles, and recorded sign-ins
-  threads.py                     Conversations, messages, and history for the agent
-services/api/                    HTTP API (FastAPI)
-  Dockerfile                     Built from the repo root; installs --package api
-  alembic.ini                    Migration config (URL comes from the environment)
-  migrations/env.py              Wires Alembic to the models and DATABASE_URL
-  migrations/versions/           Migration files, applied in order
-  src/api/main.py                App factory
-  src/api/settings.py            API settings from .env
-  src/api/logconfig.py           JSON logs in production (never the query string)
-  src/api/middleware.py          Request id, body cap, rate limit (ASGI, SSE-safe)
-  src/api/observability.py       Optional Sentry
-  src/api/deps.py                Injectable Redis, queue, DB session; the auth guard
-  src/api/security.py            Issue, verify and clear the session cookie
-  src/api/oauth.py               The Google OAuth client
-  src/api/schemas.py             Response shapes shared by routers
-  src/api/checks.py              Postgres + Redis readiness probes
-  src/api/sse.py                 Server-Sent Events framing
-  src/api/routers/health.py      /health (liveness), /ready (readiness)
-  src/api/routers/auth.py        Sign in, sign out, /me; the domain rule
-  src/api/routers/admin.py       List users, set role, revoke access
-  src/api/routers/threads.py     Conversations, message history, start a run
-  src/api/routers/runs.py        Stream, cancel, status
-services/worker/                 Background worker
-  Dockerfile                     Built from the repo root; installs --package worker
-  src/worker/main.py             RQ consumer: startup retry, warm shutdown
-  src/worker/tasks.py            The job: run the agent, publish its events
-  src/worker/settings.py         Worker settings from .env
-  src/worker/logconfig.py        JSON logs in production
-services/frontend/               Chat UI (Next.js + Tailwind)
-  Dockerfile                     Standalone Next build; API URL baked in at build
-  src/app/page.tsx               Chat: threads, streaming, cancel
-  src/app/login/page.tsx         Google sign-in
-  src/app/admin/page.tsx         User management (admin only)
-  src/lib/api.ts                 Cookie-credentialed fetch to the API
-  src/lib/sse.ts                 EventSource reader for a run
-packages/accounting_research/src/accounting_research/
-  core/
-    settings.py                  Settings from .env
-    db.py                        Admin + read-only connections
-    embeddings.py                Local Hugging Face embeddings (catalog search)
-  retrieval/
-    metadata.py                  Loader for tables.yaml
-    catalog.py                   Build schema catalog (ar-catalog)
-    search.py                    Hybrid table selection (pgvector + FTS + RRF)
+packages/run_bus/                Redis transport shared by api + worker
+packages/app_db/                 Postgres persistence: users, threads, messages, runs
+packages/mleng/src/mleng/
+  core/settings.py               LLM settings from .env
   agent/
-    schemas.py                   Structured output (answer/confidence/citations)
+    schemas.py                   Structured output (answer / confidence / abstention)
     events.py                    Run event contract shared by every layer
     runner.py                    run_agent(): the single execution path
     builder.py                   create_agent assembly + middleware
-    prompts/system.md            System prompt content (behavioral contract)
-    prompts/__init__.py          Prompt loader
-    tools/schema_search.py       search_schema tool
-    tools/sql_query.py           run_sql_query tool (read-only)
-  ingestion/
-    seed.py                      Synthetic data loader (ar-seed)
-  interfaces/
-    cli.py                       Chat REPL (ar-chat)
-  eval/                          Evaluation harness (Phase 3, stub)
+    prompts/system.md            System prompt
+    tools/                       Empty for now; workflow tools go here
+  interfaces/cli.py              Chat REPL (mleng-chat)
+services/api/                    HTTP API (FastAPI)
+services/worker/                 Background worker (mleng-worker)
+services/frontend/               Chat UI (Next.js)
 tests/                           Test suite (make test)
-  conftest.py                    Fake Redis, rolled-back transactions, signed-in clients
-  doubles.py                     Scripted stands-ins for the agent
-  test_runner.py                 The run event contract
-  test_run_bus.py                Publish, replay, resume, cancel
-  test_run_records.py            Guarded lifecycle transitions; run ownership
-  test_thread_records.py         Conversations, message order, cascade delete
-  test_user_records.py           Accounts, roles, and returning users
-  test_auth.py                   The domain rule, the cookie, and the guard
-  test_admin.py                  Who may manage users, and what they may not do
-  test_threads_api.py            List, create, read, delete; isolation
-  test_runs_api.py               Accept, report, stream, stop over HTTP
-  test_worker_tasks.py           Events and records agreeing on every path
-  test_sse.py                    Server-Sent Events framing
-  test_cors.py                   Frontend origin allowed; others not reflected
-  test_hardening.py              Docs closed, body cap, rate limit, request ids
 ```
