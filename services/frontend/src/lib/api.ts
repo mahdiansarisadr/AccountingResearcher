@@ -1,8 +1,8 @@
-import { ApiError, type Message, type Run, type Thread, type ThreadFile, type User, type UserRole } from "./types";
+import { ApiError, type ExperimentRun, type Message, type Progress, type Run, type Thread, type ThreadFile, type User, type UserRole } from "./types";
 
 // In production Caddy serves UI and API on one host, so this is https://{PUBLIC_HOST}.
-// `??` only falls through on null/undefined; an explicit empty string means same-origin.
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Empty string would send fetches to the Next.js origin and miss the API.
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export function loginUrl(): string {
   return `${API_URL}/auth/login`;
@@ -62,6 +62,14 @@ export function listMessages(threadId: string): Promise<Message[]> {
 
 export function listThreadFiles(threadId: string): Promise<ThreadFile[]> {
   return request(`/threads/${threadId}/files`);
+}
+
+export function listExperiments(threadId: string): Promise<ExperimentRun[]> {
+  return request(`/threads/${threadId}/experiments`);
+}
+
+export function getProgress(threadId: string): Promise<Progress> {
+  return request(`/threads/${threadId}/progress`);
 }
 
 export async function uploadThreadFile(

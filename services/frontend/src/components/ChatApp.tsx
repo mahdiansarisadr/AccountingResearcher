@@ -6,6 +6,8 @@ import {
   cancelRun,
   createThread,
   deleteThread,
+  getProgress,
+  listExperiments,
   listMessages,
   listThreadFiles,
   listThreads,
@@ -13,18 +15,26 @@ import {
   uploadThreadFile,
 } from "@/lib/api";
 import { streamRun } from "@/lib/sse";
-import { ApiError, type Message, type Thread, type ThreadFile, type User } from "@/lib/types";
+import {
+  ApiError,
+  type ExperimentRun,
+  type Message,
+  type Progress,
+  type Thread,
+  type ThreadFile,
+  type User,
+} from "@/lib/types";
 
 import { AppHeader } from "./AppHeader";
 import { ChatPane, type LiveTurn } from "./ChatPane";
+import { ExperimentSidebar } from "./ExperimentSidebar";
 import { ThreadSidebar } from "./ThreadSidebar";
 
 function describeTool(name: string): string {
   if (name === "profile_dataset") return "Profiling dataset…";
   if (name === "train_model") return "Training model…";
-  if (name.startsWith("search_") || name.includes("trace") || name.includes("run")) {
-    return `MLflow: ${name}`;
-  }
+  if (name === "get_recipe") return "Reading a recipe…";
+  if (name === "report_progress") return "Reviewing the search…";
   return name;
 }
 
@@ -33,6 +43,8 @@ export function ChatApp({ user }: { user: User }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [files, setFiles] = useState<ThreadFile[]>([]);
+  const [experiments, setExperiments] = useState<ExperimentRun[]>([]);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [draft, setDraft] = useState("");
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -47,6 +59,15 @@ export function ChatApp({ user }: { user: User }) {
     return listed;
   }, []);
 
+  const refreshResults = useCallback(async (threadId: string) => {
+    const [runs, trajectory] = await Promise.all([
+      listExperiments(threadId).catch(() => []),
+      getProgress(threadId).catch(() => null),
+    ]);
+    setExperiments(runs);
+    setProgress(trajectory);
+  }, []);
+
   useEffect(() => {
     void refreshThreads();
     return () => stopStream.current?.();
@@ -56,6 +77,7 @@ export function ChatApp({ user }: { user: User }) {
     setSelectedId(id);
     setMessages(await listMessages(id));
     setFiles(await listThreadFiles(id).catch(() => []));
+    await refreshResults(id);
     setLive(null);
   }
 
@@ -75,6 +97,7 @@ export function ChatApp({ user }: { user: User }) {
         setSelectedId(null);
         setMessages([]);
         setFiles([]);
+        setExperiments([]);
       }
     }
   }
@@ -120,6 +143,11 @@ export function ChatApp({ user }: { user: User }) {
               : current,
           );
         },
+        onToolResult(name) {
+          // A search can run for many minutes. Show each version as it lands
+          // rather than making the panel wait for the whole thing to finish.
+          if (name === "train_model") void refreshResults(threadId);
+        },
         onAnswer(answer) {
           setLive((current) => (current ? { ...current, answer } : current));
         },
@@ -131,12 +159,17 @@ export function ChatApp({ user }: { user: User }) {
           setRunId(null);
           setMessages(await listMessages(threadId));
           setLive(null);
+          await refreshResults(threadId);
           await refreshThreads();
         },
       });
     } catch (error) {
       const message =
-        error instanceof ApiError ? error.message : "Could not start the run.";
+        error instanceof ApiError
+          ? error.status === 409
+            ? "This conversation already has a run in progress. Wait for it, or refresh."
+            : error.message
+          : "Could not start the run.";
       setLive((current) => (current ? { ...current, error: message } : current));
       setRunId(null);
     } finally {
@@ -158,11 +191,7 @@ export function ChatApp({ user }: { user: User }) {
       setFiles(await listThreadFiles(threadId));
     } catch (error) {
       const message =
-        error instanceof ApiError && error.status === 413
-          ? "File is too large (max 25 MB). Attach a CSV or Parquet file — don’t paste the table into the chat."
-          : error instanceof ApiError
-            ? error.message
-            : "Could not upload the file.";
+        error instanceof ApiError ? error.message : "Could not upload the file.";
       setLive({
         question: `Uploaded ${file.name}`,
         tokens: "",
@@ -203,6 +232,11 @@ export function ChatApp({ user }: { user: User }) {
           files={files}
           streaming={streaming}
           emptyHint="Upload a CSV, then ask me to train a model — or just chat."
+        />
+        <ExperimentSidebar
+          runs={experiments}
+          progress={progress}
+          visible={selectedId !== null}
         />
       </div>
     </div>

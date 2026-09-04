@@ -39,6 +39,54 @@ export type ThreadFile = {
   modified_at: string;
 };
 
+export type ExperimentRun = {
+  run_id: string;
+  name: string;
+  status: string;
+  started_at: string | null;
+  model: string | null;
+  task: string | null;
+  hypothesis: string | null;
+  primary_metric: string | null;
+  primary_value: number | null;
+  metrics: Record<string, number>;
+  recipe_version: number | null;
+  recipe_parent: number | null;
+  recipe_kind: string | null;
+  reused: boolean;
+  split_seed: string | null;
+  error: string | null;
+};
+
+export type ProgressStep = {
+  order: number;
+  version: number | null;
+  run_id: string;
+  at: string | null;
+  value: number | null;
+  best_so_far: number | null;
+  improved: boolean;
+  gain: number | null;
+  note: string | null;
+  failed: boolean;
+  error: string | null;
+};
+
+export type Progress = {
+  metric: string | null;
+  steps: ProgressStep[];
+  first: number | null;
+  best: number | null;
+  best_version: number | null;
+  total_gain: number | null;
+  versions: number;
+  runs: number;
+  failed: number;
+  noise: number | null;
+  seconds: number;
+  improved: boolean;
+};
+
 export type Run = {
   run_id: string;
   thread_id: string;
