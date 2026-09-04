@@ -21,6 +21,7 @@ logger = logging.getLogger("api.http")
 
 _EXEMPT_PATHS = frozenset({"/health", "/ready"})
 _JSON_413 = b'{"detail":"request too large"}'
+_FILE_413 = b'{"detail":"file too large (max 25 MB)"}'
 _JSON_429 = b'{"detail":"too many requests"}'
 _UPLOAD_PATH = re.compile(r"/threads/[^/]+/files/?$")
 
@@ -30,6 +31,46 @@ def _path(scope: Scope) -> str:
     if "//" in path:
         path = re.sub(r"/{2,}", "/", path)
     return path
+
+
+def _header(scope: Scope, name: bytes) -> str:
+    for key, value in scope.get("headers") or []:
+        if key == name:
+            return value.decode("latin-1")
+    return ""
+
+
+def _path_candidates(scope: Scope) -> list[str]:
+    """Every string that might be the request path, depending on the server."""
+    path = scope.get("path") or "/"
+    raw = scope.get("raw_path") or b""
+    raw_s = raw.decode("latin-1").split("?")[0] if isinstance(raw, (bytes, bytearray)) else str(raw)
+    root = (scope.get("root_path") or "").rstrip("/")
+    combined = f"{root}{path}" if root and not path.startswith(root) else path
+    seen: list[str] = []
+    for candidate in (path, raw_s, combined):
+        text = candidate.replace("\\", "/")
+        if "//" in text:
+            text = re.sub(r"/{2,}", "/", text)
+        if text and text not in seen:
+            seen.append(text)
+    return seen
+
+
+def is_upload_request(scope: Scope) -> bool:
+    """True for dataset Attach: multipart POST, or POST to /threads/{id}/files."""
+    if (scope.get("method") or "").upper() != "POST":
+        return False
+    content_type = _header(scope, b"content-type").lower()
+    if content_type.startswith("multipart/form-data"):
+        return True
+    for path in _path_candidates(scope):
+        stripped = path.rstrip("/")
+        if "/threads/" in stripped and stripped.endswith("/files"):
+            return True
+        if _UPLOAD_PATH.search(path):
+            return True
+    return False
 
 
 def _client_host(scope: Scope) -> str:
@@ -125,11 +166,12 @@ class RequestSizeLimitMiddleware:
         self.upload_max_bytes = upload_max_bytes or max_bytes
 
     def _limit_for(self, scope: Scope) -> int:
-        path = _path(scope)
-        method = (scope.get("method") or "").upper()
-        if method == "POST" and _UPLOAD_PATH.match(path):
+        if is_upload_request(scope):
             return self.upload_max_bytes
         return self.max_bytes
+
+    def _too_large_body(self, scope: Scope) -> bytes:
+        return _FILE_413 if is_upload_request(scope) else _JSON_413
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -137,9 +179,10 @@ class RequestSizeLimitMiddleware:
             return
 
         max_bytes = self._limit_for(scope)
+        refused = self._too_large_body(scope)
         declared = _content_length(scope)
         if declared is not None and declared > max_bytes:
-            await _send_json(send, 413, _JSON_413)
+            await _send_json(send, 413, refused)
             return
 
         received = 0
@@ -160,7 +203,7 @@ class RequestSizeLimitMiddleware:
 
         async def send_or_413(message: Message) -> None:
             if too_large and message["type"] == "http.response.start":
-                await _send_json(send, 413, _JSON_413)
+                await _send_json(send, 413, refused)
                 return
             if too_large:
                 return

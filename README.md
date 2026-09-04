@@ -47,9 +47,13 @@ the agent to profile it or train. Each signed-in account writes only under
 `data/users/{that user's id}/` (uploads per thread, MLflow in that user's
 `mlflow.db` and `artifacts/`).
 
-If you previously ran the accounting-research stack, recreate the Postgres
-volume (`docker compose down -v` then `make up`) so the new `mleng` database
-user exists.
+If you previously ran the accounting-research stack, stop those containers
+(`docker stop ar_api ar_worker ar_postgres`) before `make up`. They publish
+the same host ports (8000, 5433). On macOS, the browser’s `localhost` is
+often IPv6 and will hit the old API even while `make api` is bound to
+`127.0.0.1` — Attach then 413s because that service still has a 64 KB cap.
+Recreate the Postgres volume (`docker compose down -v` then `make up`) so
+the new `mleng` database user exists.
 
 ## Usage
 

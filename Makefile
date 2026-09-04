@@ -137,7 +137,9 @@ chat:
 	$(UV) run --no-sync mleng-chat
 
 api:
-	$(UV) run --no-sync uvicorn api.main:app --reload --port 8000
+	# Dual-stack (`::`) so macOS `localhost` (IPv6) and `127.0.0.1` both hit
+	# this process, not a leftover Docker container publishing *:8000.
+	$(UV) run --no-sync uvicorn api.main:app --reload --host :: --port 8000
 
 worker:
 	$(UV) run --no-sync mleng-worker
