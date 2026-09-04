@@ -2,6 +2,7 @@ import { API_URL } from "./api";
 import type { AgentAnswer } from "./types";
 
 export type StreamHandlers = {
+  onStarted?: (runId: string) => void;
   onToken?: (text: string) => void;
   onToolCall?: (name: string, args: Record<string, unknown>) => void;
   onToolResult?: (name: string, ok: boolean, summary: string) => void;
@@ -32,6 +33,10 @@ export function streamRun(runId: string, handlers: StreamHandlers): () => void {
     handlers.onDone?.(status);
   }
 
+  source.addEventListener("run_started", (event) => {
+    const data = parseData<{ run_id: string }>(event);
+    if (data?.run_id) handlers.onStarted?.(data.run_id);
+  });
   source.addEventListener("token", (event) => {
     const data = parseData<{ text: string }>(event);
     if (data?.text) handlers.onToken?.(data.text);
@@ -59,9 +64,12 @@ export function streamRun(runId: string, handlers: StreamHandlers): () => void {
     finish(data?.status ?? "succeeded");
   });
   source.onerror = () => {
-    // A transport failure (not an `event: error`). The run may still finish;
-    // the caller reloads messages on close either way.
-    finish("failed");
+    // EventSource also fires this on a named `event: error` and while it
+    // reconnects (CONNECTING). Closing here would wipe the live turn and look
+    // like the agent never answered. Only give up when the browser gives up.
+    if (source.readyState === EventSource.CLOSED) {
+      finish("failed");
+    }
   };
 
   return () => {
