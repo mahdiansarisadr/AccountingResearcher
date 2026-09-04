@@ -12,6 +12,7 @@ between them; the caller owns the conversation and hands it over each turn.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 from uuid import uuid4
@@ -19,12 +20,15 @@ from uuid import uuid4
 from langchain_core.messages import AIMessageChunk
 from langchain_core.utils.json import parse_partial_json
 
+from ..core.experiments import primary_score
 from .builder import build_agent
 from .events import Answer, Done, Error, RunEvent, RunStarted, Token, ToolCall, ToolResult
 from .schemas import AgentAnswer
 
 # A turn in the conversation, as {"role": ..., "content": ...}.
 Message = dict[str, Any]
+
+_SUMMARY_CHARS = 200
 
 
 def _answer_so_far(buffer: str) -> str:
@@ -49,13 +53,59 @@ def _answer_so_far(buffer: str) -> str:
     return ""
 
 
+def _as_json(content: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _summarize_profile(content: str) -> str:
+    data = _as_json(content)
+    if data is None:
+        return content[:_SUMMARY_CHARS]
+    parts = [str(data.get("file") or "dataset")]
+    rows, columns = data.get("rows"), data.get("n_columns")
+    if isinstance(rows, int):
+        parts.append(f"{rows:,} rows")
+    if isinstance(columns, int):
+        parts.append(f"{columns} columns")
+    return " · ".join(parts)
+
+
+def _summarize_training(content: str) -> str:
+    data = _as_json(content)
+    if data is None:
+        return content[:_SUMMARY_CHARS]
+    parts: list[str] = []
+    version = data.get("recipe_version")
+    if isinstance(version, int):
+        parts.append(f"re-ran v{version}" if data.get("reused_recipe") else f"v{version}")
+    parts.append(str(data.get("model") or "custom code"))
+    metric, value = primary_score(data.get("metrics") or {})
+    if metric and value is not None:
+        parts.append(f"{metric} {value:.4g}")
+    seconds = data.get("seconds")
+    if isinstance(seconds, (int, float)):
+        parts.append(f"{seconds:.1f}s")
+    return " · ".join(parts)
+
+
 def _summarize_tool_result(name: str, content: str, ok: bool) -> str:
-    """Describe a tool result in one short line."""
+    """Say what a tool returned, the way a person would say it.
+
+    The tools answer the model in JSON because that is what the model reads
+    best. A person watching the run needs the same fact in a few words, so the
+    translation happens here rather than leaving the UI to parse payloads.
+    """
     if not ok:
-        return content.splitlines()[0][:200]
-    if name in {"profile_dataset", "train_model"}:
-        return content.splitlines()[0][:200]
-    return f"{len(content)} chars"
+        return content.splitlines()[0][:_SUMMARY_CHARS]
+    if name == "profile_dataset":
+        return _summarize_profile(content)
+    if name == "train_model":
+        return _summarize_training(content)
+    return content.splitlines()[0][:_SUMMARY_CHARS]
 
 
 def _tool_events(message: Any) -> Iterator[RunEvent]:

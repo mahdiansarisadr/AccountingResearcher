@@ -26,16 +26,58 @@ import {
 } from "@/lib/types";
 
 import { AppHeader } from "./AppHeader";
-import { ChatPane, type LiveTurn } from "./ChatPane";
+import { ChatPane, type LiveStep, type LiveTurn } from "./ChatPane";
 import { ExperimentSidebar } from "./ExperimentSidebar";
 import { ThreadSidebar } from "./ThreadSidebar";
 
-function describeTool(name: string): string {
-  if (name === "profile_dataset") return "Profiling dataset…";
-  if (name === "train_model") return "Training model…";
-  if (name === "get_recipe") return "Reading a recipe…";
-  if (name === "report_progress") return "Reviewing the search…";
-  return name;
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Name a tool call the way the person watching would describe it. */
+function describeTool(
+  name: string,
+  args: Record<string, unknown>,
+): { label: string; detail: string | null } {
+  if (name === "profile_dataset") {
+    const file = text(args.filename);
+    return { label: file ? `Profiling ${file}` : "Profiling the dataset", detail: null };
+  }
+
+  if (name === "train_model") {
+    const detail = text(args.hypothesis);
+    const rerun = args.recipe_version;
+    if (typeof rerun === "number") {
+      return { label: `Re-running v${rerun}`, detail };
+    }
+    const parent = args.parent_version;
+    const what = text(args.model) ?? (args.code ? "custom code" : "the default model");
+    const from = typeof parent === "number" ? ` from v${parent}` : "";
+    return { label: `Training ${what}${from}`, detail };
+  }
+
+  if (name === "get_recipe") {
+    const version = args.version;
+    return {
+      label: typeof version === "number" ? `Reading v${version}` : "Reading a recipe",
+      detail: null,
+    };
+  }
+
+  if (name === "report_progress") {
+    return { label: "Reviewing the whole search", detail: null };
+  }
+
+  return { label: name, detail: null };
+}
+
+/** The opening message an upload stands in for. */
+function kickoff(filename: string): string {
+  return (
+    `I've uploaded ${filename}. Profile it and tell me what's in it. ` +
+    `If it's clear what I'd want to predict, go ahead and start working on it ` +
+    `and keep iterating until it stops getting better — otherwise ask me first.`
+  );
 }
 
 export function ChatApp({ user }: { user: User }) {
@@ -102,30 +144,20 @@ export function ChatApp({ user }: { user: User }) {
     }
   }
 
-  async function onSend() {
-    const text = draft.trim();
-    if (!text || streaming) return;
-
-    if (text.length > 4_000) {
-      setDraft("");
-      await onAttach(new File([text], "pasted.csv", { type: "text/csv" }));
-      return;
-    }
-
-    let threadId = selectedId;
-    if (!threadId) {
-      const thread = await createThread();
-      threadId = thread.id;
-      setSelectedId(threadId);
-      await refreshThreads();
-    }
-
-    setDraft("");
-    setLive({ question: text, tokens: "", answer: null, tools: [], error: null });
+  /** Queue a turn and stream it. Shared by typing a message and dropping a file. */
+  async function launch(threadId: string, question: string) {
+    setLive({
+      question,
+      tokens: "",
+      answer: null,
+      steps: [],
+      startedAt: Date.now(),
+      error: null,
+    });
     setBusy(true);
 
     try {
-      const run = await startRun(threadId, text);
+      const run = await startRun(threadId, question);
       setRunId(run.run_id);
       setMessages(await listMessages(threadId));
       await refreshThreads();
@@ -136,14 +168,36 @@ export function ChatApp({ user }: { user: User }) {
             current ? { ...current, tokens: current.tokens + chunk } : current,
           );
         },
-        onToolCall(name) {
-          setLive((current) =>
-            current
-              ? { ...current, tools: [...current.tools, describeTool(name)] }
-              : current,
-          );
+        onToolCall(name, args) {
+          setLive((current) => {
+            if (!current) return current;
+            const { label, detail } = describeTool(name, args);
+            const step: LiveStep = {
+              id: current.steps.length,
+              label,
+              detail,
+              result: null,
+              status: "running",
+            };
+            return { ...current, steps: [...current.steps, step] };
+          });
         },
-        onToolResult(name) {
+        onToolResult(name, ok, summary) {
+          // Results arrive in call order, so the oldest unfinished step is this one.
+          setLive((current) => {
+            if (!current) return current;
+            const pending = current.steps.findIndex(
+              (step) => step.status === "running",
+            );
+            if (pending === -1) return current;
+            const steps = [...current.steps];
+            steps[pending] = {
+              ...steps[pending],
+              status: ok ? "ok" : "failed",
+              result: summary || null,
+            };
+            return { ...current, steps };
+          });
           // A search can run for many minutes. Show each version as it lands
           // rather than making the panel wait for the whole thing to finish.
           if (name === "train_model") void refreshResults(threadId);
@@ -177,7 +231,16 @@ export function ChatApp({ user }: { user: User }) {
     }
   }
 
-  async function onAttach(file: File) {
+  async function onSend() {
+    const text = draft.trim();
+    if (!text || streaming) return;
+
+    if (text.length > 4_000) {
+      setDraft("");
+      await onAttach(new File([text], "pasted.csv", { type: "text/csv" }));
+      return;
+    }
+
     let threadId = selectedId;
     if (!threadId) {
       const thread = await createThread();
@@ -185,6 +248,22 @@ export function ChatApp({ user }: { user: User }) {
       setSelectedId(threadId);
       await refreshThreads();
     }
+
+    setDraft("");
+    await launch(threadId, text);
+  }
+
+  async function onAttach(file: File) {
+    if (streaming) return;
+
+    let threadId = selectedId;
+    if (!threadId) {
+      const thread = await createThread();
+      threadId = thread.id;
+      setSelectedId(threadId);
+      await refreshThreads();
+    }
+
     setBusy(true);
     try {
       await uploadThreadFile(threadId, file);
@@ -196,12 +275,18 @@ export function ChatApp({ user }: { user: User }) {
         question: `Uploaded ${file.name}`,
         tokens: "",
         answer: null,
-        tools: [],
+        steps: [],
+        startedAt: Date.now(),
         error: message,
       });
+      return;
     } finally {
       setBusy(false);
     }
+
+    // An upload is a request to get to work. The agent profiles the file and
+    // either starts or asks, rather than waiting to be told twice.
+    await launch(threadId, kickoff(file.name));
   }
 
   async function onCancel() {
@@ -231,7 +316,7 @@ export function ChatApp({ user }: { user: User }) {
           onAttach={(file) => void onAttach(file)}
           files={files}
           streaming={streaming}
-          emptyHint="Upload a CSV, then ask me to train a model — or just chat."
+          emptyHint="Drop a CSV and I'll get to work on it — or just chat."
         />
         <ExperimentSidebar
           runs={experiments}

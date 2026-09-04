@@ -1,16 +1,105 @@
 "use client";
 
-import { useEffect, useRef, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 
 import type { AgentAnswer, Message, ThreadFile } from "@/lib/types";
+
+/** One tool call, from the moment it starts to whatever it returned. */
+export type LiveStep = {
+  id: number;
+  label: string;
+  detail: string | null;
+  result: string | null;
+  status: "running" | "ok" | "failed";
+};
 
 export type LiveTurn = {
   question: string;
   tokens: string;
   answer: AgentAnswer | null;
-  tools: string[];
+  steps: LiveStep[];
+  startedAt: number;
   error: string | null;
 };
+
+const STEPS_SHOWN = 6;
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${total % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function StepRow({ step }: { step: LiveStep }) {
+  const mark =
+    step.status === "running" ? "•" : step.status === "failed" ? "×" : "✓";
+  const markTone =
+    step.status === "running"
+      ? "animate-pulse text-copper"
+      : step.status === "failed"
+        ? "text-red-800"
+        : "text-ink-faint";
+  return (
+    <li className="flex gap-2 text-[12px] leading-5">
+      <span className={`w-3 shrink-0 text-center ${markTone}`}>{mark}</span>
+      <span className="min-w-0 flex-1">
+        <span className={step.status === "running" ? "text-ink" : "text-ink-muted"}>
+          {step.label}
+        </span>
+        {step.result ? (
+          <span
+            className={`ml-2 tabular-nums ${
+              step.status === "failed" ? "text-red-800" : "text-ink-faint"
+            }`}
+          >
+            {step.result}
+          </span>
+        ) : null}
+        {step.detail ? (
+          <span className="block truncate text-ink-faint">{step.detail}</span>
+        ) : null}
+      </span>
+    </li>
+  );
+}
+
+/** What the agent is doing right now, so a long run is never a blank page. */
+function Activity({ live, streaming }: { live: LiveTurn; streaming: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!streaming) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [streaming]);
+
+  if (!live.steps.length) return null;
+
+  const hidden = Math.max(0, live.steps.length - STEPS_SHOWN);
+  const shown = live.steps.slice(hidden);
+  const done = live.steps.filter((step) => step.status !== "running").length;
+
+  return (
+    <div className="mb-3 border-b border-black/5 pb-3">
+      <p className="mb-1.5 text-[10px] uppercase tracking-widest text-ink-faint">
+        {streaming ? "Working" : "Done"} · {done} of {live.steps.length} steps ·{" "}
+        {formatElapsed(now - live.startedAt)}
+      </p>
+      {hidden ? (
+        <p className="mb-1 pl-5 text-[12px] leading-5 text-ink-faint">
+          {`${hidden} earlier ${hidden === 1 ? "step" : "steps"}`}
+        </p>
+      ) : null}
+      <ul className="space-y-0.5">
+        {shown.map((step) => (
+          <StepRow key={step.id} step={step} />
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function asAnswer(payload: Message["payload"]): AgentAnswer | null {
   if (!payload || typeof payload !== "object") return null;
@@ -158,13 +247,19 @@ export function ChatPane({
             ) : null}
             {live ? (
               <Bubble align="start">
-                {live.tools.length ? (
-                  <p className="mb-2 text-xs uppercase tracking-wide text-ink-faint">
-                    {live.tools[live.tools.length - 1]}
-                  </p>
-                ) : null}
+                <Activity live={live} streaming={streaming} />
                 <p className="whitespace-pre-wrap">
-                  {live.answer?.answer || live.tokens || (streaming ? "…" : "")}
+                  {live.answer?.answer ||
+                    live.tokens ||
+                    (streaming ? (
+                      <span className="animate-pulse text-ink-muted">
+                        {live.steps.some((step) => step.status === "running")
+                          ? "Working…"
+                          : "Thinking…"}
+                      </span>
+                    ) : (
+                      ""
+                    ))}
                 </p>
                 {live.answer ? <AnswerMeta answer={live.answer} /> : null}
                 {live.error ? (
@@ -216,7 +311,7 @@ export function ChatPane({
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             rows={2}
-            placeholder="Attach a CSV, then ask to train…"
+            placeholder="Attach a CSV to start, or type a message…"
             disabled={streaming}
             className="min-h-[3rem] flex-1 resize-none rounded-xl border border-black/10 bg-paper px-3 py-2 text-sm outline-none focus:border-copper"
           />

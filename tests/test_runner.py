@@ -8,6 +8,8 @@ model, no key and no database.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from mleng.agent.runner import run_agent
 
@@ -88,8 +90,89 @@ def test_tool_calls_and_results_are_reported_as_they_complete() -> None:
 
     tool_result = next(e for e in events if e.type == "tool_result")
     assert tool_result.ok is True
-    # Summarised, never the payload.
-    assert tool_result.summary == "2 chars"
+    assert tool_result.summary == "ok"
+
+
+def test_a_large_tool_payload_is_never_shipped_whole() -> None:
+    """The summary feeds a one-line activity row, not a document viewer."""
+    user = FakeMessage(type="human")
+    result = FakeMessage(type="tool", name="example_tool", content="x" * 5_000)
+    agent = FakeAgent(
+        [
+            state_chunk([user, result]),
+            state_chunk([user, result], structured=make_answer()),
+        ]
+    )
+
+    summary = next(e for e in events_of(agent) if e.type == "tool_result").summary
+
+    assert len(summary) <= 200
+
+
+def test_a_training_result_is_summarised_as_a_person_would_say_it() -> None:
+    """The tools answer the model in JSON; the activity log needs English."""
+    user = FakeMessage(type="human")
+    payload = json.dumps(
+        {
+            "recipe_version": 3,
+            "reused_recipe": False,
+            "model": "random_forest",
+            "metrics": {"r2": 0.6241, "mae": 3.2},
+            "seconds": 4.13,
+        }
+    )
+    result = FakeMessage(type="tool", name="train_model", content=payload)
+    agent = FakeAgent(
+        [
+            state_chunk([user, result]),
+            state_chunk([user, result], structured=make_answer()),
+        ]
+    )
+
+    summary = next(e for e in events_of(agent) if e.type == "tool_result").summary
+
+    assert summary == "v3 · random_forest · r2 0.6241 · 4.1s"
+    assert "{" not in summary
+
+
+def test_a_reused_recipe_says_so_rather_than_looking_like_a_new_idea() -> None:
+    user = FakeMessage(type="human")
+    payload = json.dumps(
+        {
+            "recipe_version": 1,
+            "reused_recipe": True,
+            "model": "ridge",
+            "metrics": {"r2": 0.412},
+            "seconds": 0.8,
+        }
+    )
+    result = FakeMessage(type="tool", name="train_model", content=payload)
+    agent = FakeAgent(
+        [
+            state_chunk([user, result]),
+            state_chunk([user, result], structured=make_answer()),
+        ]
+    )
+
+    summary = next(e for e in events_of(agent) if e.type == "tool_result").summary
+
+    assert summary.startswith("re-ran v1")
+
+
+def test_a_profile_result_reports_the_shape_of_the_file() -> None:
+    user = FakeMessage(type="human")
+    payload = json.dumps({"file": "sales.csv", "rows": 4320, "n_columns": 12})
+    result = FakeMessage(type="tool", name="profile_dataset", content=payload)
+    agent = FakeAgent(
+        [
+            state_chunk([user, result]),
+            state_chunk([user, result], structured=make_answer()),
+        ]
+    )
+
+    summary = next(e for e in events_of(agent) if e.type == "tool_result").summary
+
+    assert summary == "sales.csv · 4,320 rows · 12 columns"
 
 
 def test_a_failing_tool_is_reported_as_not_ok() -> None:
