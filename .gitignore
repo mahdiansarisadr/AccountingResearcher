@@ -28,3 +28,5 @@ node_modules/
 .next/
 dist/
 build/
+# TypeScript's incremental build cache, rewritten on every typecheck.
+*.tsbuildinfo
