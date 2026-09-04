@@ -14,6 +14,8 @@ from uuid import UUID, uuid4
 import app_db
 import run_bus
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
+from mleng.core.experiments import list_experiment_runs
+from mleng.core.progress import summarise_progress
 from mleng.core.workspace import (
     delete_thread_uploads,
     list_uploads,
@@ -23,7 +25,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..deps import CurrentUser, QueueDep, RedisDep, SessionDep, SettingsDep
-from ..schemas import MessageResponse, RunResponse, ThreadFileResponse, ThreadResponse
+from ..schemas import (
+    ExperimentRunResponse,
+    MessageResponse,
+    ProgressResponse,
+    ProgressStepResponse,
+    RunResponse,
+    ThreadFileResponse,
+    ThreadResponse,
+)
 
 logger = logging.getLogger("api.threads")
 
@@ -107,6 +117,74 @@ def list_thread_files(
     ]
 
 
+@router.get("/{thread_id}/experiments", response_model=list[ExperimentRunResponse])
+def list_thread_experiments(
+    thread_id: UUID, user: CurrentUser, session: SessionDep
+) -> list[ExperimentRunResponse]:
+    """Training runs logged to this conversation's MLflow experiment."""
+    _load_thread(session, thread_id, user)
+    rows = list_experiment_runs(str(user.id), str(thread_id))
+    return [
+        ExperimentRunResponse(
+            run_id=row.run_id,
+            name=row.name,
+            status=row.status,
+            started_at=row.started_at,
+            model=row.model,
+            task=row.task,
+            hypothesis=row.hypothesis or None,
+            primary_metric=row.primary_metric,
+            primary_value=row.primary_value,
+            metrics=row.metrics,
+            recipe_version=row.recipe_version,
+            recipe_parent=row.recipe_parent,
+            recipe_kind=row.recipe_kind,
+            reused=row.reused,
+            split_seed=row.split_seed,
+            error=row.error,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/{thread_id}/progress", response_model=ProgressResponse)
+def thread_progress(
+    thread_id: UUID, user: CurrentUser, session: SessionDep
+) -> ProgressResponse:
+    """How the score moved across this conversation's whole search."""
+    _load_thread(session, thread_id, user)
+    progress = summarise_progress(str(user.id), str(thread_id))
+    return ProgressResponse(
+        metric=progress.metric,
+        steps=[
+            ProgressStepResponse(
+                order=step.order,
+                version=step.version,
+                run_id=step.run_id,
+                at=step.at,
+                value=step.value,
+                best_so_far=step.best_so_far,
+                improved=step.improved,
+                gain=step.gain,
+                note=step.note,
+                failed=step.failed,
+                error=step.error,
+            )
+            for step in progress.steps
+        ],
+        first=progress.first,
+        best=progress.best,
+        best_version=progress.best_version,
+        total_gain=progress.total_gain,
+        versions=progress.versions,
+        runs=progress.runs,
+        failed=progress.failed,
+        noise=progress.noise,
+        seconds=progress.seconds,
+        improved=progress.improved,
+    )
+
+
 @router.post(
     "/{thread_id}/files",
     response_model=ThreadFileResponse,
@@ -122,7 +200,9 @@ async def upload_thread_file(
     _load_thread(session, thread_id, user)
     data = await file.read()
     if len(data) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail="request too large")
+        raise HTTPException(
+            status_code=413, detail="file too large (max 25 MB)"
+        )
     try:
         stored = save_upload(str(user.id), str(thread_id), file.filename or "", data)
     except ValueError as exc:

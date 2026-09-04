@@ -26,6 +26,8 @@ from .conftest import sign_in
         ("get", "/threads/{thread_id}/messages"),
         ("get", "/threads/{thread_id}/files"),
         ("post", "/threads/{thread_id}/files"),
+        ("get", "/threads/{thread_id}/experiments"),
+        ("get", "/threads/{thread_id}/progress"),
         ("post", "/threads/{thread_id}/runs"),
     ],
 )
@@ -83,6 +85,8 @@ def test_a_thread_is_invisible_to_everyone_but_its_owner(
         )
         assert intruder.delete(f"/threads/{thread.id}").status_code == 404
         assert intruder.get(f"/threads/{thread.id}/files").status_code == 404
+        assert intruder.get(f"/threads/{thread.id}/experiments").status_code == 404
+        assert intruder.get(f"/threads/{thread.id}/progress").status_code == 404
         assert (
             intruder.post(
                 f"/threads/{thread.id}/files",
@@ -195,3 +199,138 @@ def test_deleting_a_thread_removes_only_that_threads_uploads(
     kept = tmp_path / "users" / str(owner.id) / "uploads" / str(other.id) / "kept.csv"
     assert not gone.exists()
     assert kept.is_file()
+
+
+def test_experiments_are_empty_before_anyone_trains(
+    as_member, thread, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
+    assert as_member.get(f"/threads/{thread.id}/experiments").json() == []
+
+
+def test_experiments_list_the_threads_mlflow_runs(
+    as_member, thread, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
+    from mleng.agent.tools.train import train_model_impl
+    from mleng.core.workspace import reset_run_context, save_upload, set_run_context
+
+    rows = ["x,z,y"]
+    for i in range(1, 11):
+        rows.append(f"{i},{i + 1},{i * 2.0}")
+    save_upload(
+        str(thread.user_id),
+        str(thread.id),
+        "data.csv",
+        ("\n".join(rows) + "\n").encode(),
+        data_dir=tmp_path,
+    )
+    token = set_run_context(str(thread.user_id), str(thread.id), data_dir=tmp_path)
+    try:
+        raw = train_model_impl(
+            "y",
+            filename="data.csv",
+            model="ridge",
+            task="regression",
+            hypothesis="baseline ridge",
+        )
+    finally:
+        reset_run_context(token)
+    assert not raw.startswith("ERROR:")
+
+    listed = as_member.get(f"/threads/{thread.id}/experiments").json()
+    assert len(listed) == 1
+    assert listed[0]["model"] == "ridge"
+    assert listed[0]["primary_metric"] == "r2"
+    assert listed[0]["hypothesis"] == "baseline ridge"
+    assert "mae" in listed[0]["metrics"]
+    assert "rmse" in listed[0]["metrics"]
+    assert listed[0]["recipe_version"] == 1
+    assert listed[0]["recipe_kind"] == "default"
+    assert listed[0]["reused"] is False
+
+
+def test_experiments_report_the_version_each_run_executed(
+    as_member, thread, tmp_path, monkeypatch
+) -> None:
+    """The sidebar groups by version, so a re-run must not look like a new idea."""
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
+    from mleng.agent.tools.train import train_model_impl
+    from mleng.core.workspace import reset_run_context, save_upload, set_run_context
+
+    rows = ["x,z,y"]
+    for i in range(1, 13):
+        rows.append(f"{i},{i + 1},{i * 2.0}")
+    save_upload(
+        str(thread.user_id),
+        str(thread.id),
+        "data.csv",
+        ("\n".join(rows) + "\n").encode(),
+        data_dir=tmp_path,
+    )
+    token = set_run_context(str(thread.user_id), str(thread.id), data_dir=tmp_path)
+    try:
+        train_model_impl("y", filename="data.csv", model="ridge", task="regression")
+        train_model_impl("y", filename="data.csv", recipe_version=1, split_seed=7)
+        train_model_impl(
+            "y",
+            filename="data.csv",
+            model="random_forest",
+            task="regression",
+            parent_version=1,
+        )
+    finally:
+        reset_run_context(token)
+
+    listed = as_member.get(f"/threads/{thread.id}/experiments").json()
+    versions = sorted(row["recipe_version"] for row in listed)
+
+    assert versions == [1, 1, 2]
+    reran = [row for row in listed if row["recipe_version"] == 1 and row["reused"]]
+    assert len(reran) == 1
+    assert reran[0]["split_seed"] == "7"
+    forked = next(row for row in listed if row["recipe_version"] == 2)
+    assert forked["recipe_parent"] == 1
+
+
+def test_progress_traces_the_search_in_the_order_it_happened(
+    as_member, thread, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MLENG_DATA_DIR", str(tmp_path))
+    from mleng.agent.tools.train import train_model_impl
+    from mleng.core.workspace import reset_run_context, save_upload, set_run_context
+
+    empty = as_member.get(f"/threads/{thread.id}/progress").json()
+    assert empty["steps"] == []
+    assert empty["improved"] is False
+
+    rows = ["x,z,y"]
+    for i in range(1, 17):
+        rows.append(f"{i},{i + 1},{i * 2.0}")
+    save_upload(
+        str(thread.user_id),
+        str(thread.id),
+        "data.csv",
+        ("\n".join(rows) + "\n").encode(),
+        data_dir=tmp_path,
+    )
+    token = set_run_context(str(thread.user_id), str(thread.id), data_dir=tmp_path)
+    try:
+        train_model_impl("y", filename="data.csv", model="ridge", task="regression")
+        train_model_impl(
+            "y", filename="data.csv", model="random_forest", task="regression"
+        )
+    finally:
+        reset_run_context(token)
+
+    body = as_member.get(f"/threads/{thread.id}/progress").json()
+
+    assert body["metric"] == "r2"
+    assert body["runs"] == 2
+    assert body["versions"] == 2
+    assert [step["order"] for step in body["steps"]] == [1, 2]
+    assert [step["version"] for step in body["steps"]] == [1, 2]
+    curve = [step["best_so_far"] for step in body["steps"]]
+    assert curve[0] <= curve[1]
+    assert body["best"] == curve[-1]
+    assert body["best_version"] in (1, 2)

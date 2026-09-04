@@ -21,6 +21,7 @@ from langchain_core.utils.json import parse_partial_json
 
 from .builder import build_agent
 from .events import Answer, Done, Error, RunEvent, RunStarted, Token, ToolCall, ToolResult
+from .schemas import AgentAnswer
 
 # A turn in the conversation, as {"role": ..., "content": ...}.
 Message = dict[str, Any]
@@ -118,6 +119,7 @@ def run_agent(
     buffer = ""
     streamed_chars = 0
     status = "succeeded"
+    did_work = False
 
     try:
         # Two stream modes at once: "messages" carries token-level chunks,
@@ -147,6 +149,7 @@ def run_agent(
             state_messages = chunk.get("messages", [])
             for state_message in state_messages[consumed:]:
                 for event in _tool_events(state_message):
+                    did_work = True
                     yield numbered(event)
             consumed = max(consumed, len(state_messages))
 
@@ -163,13 +166,34 @@ def run_agent(
         return
 
     if answer is None:
-        # The agent stopped without producing a grounded answer, which happens
-        # when it exhausts its step budget. Reported as a failure rather than
-        # invented as an abstention, since the agent never actually said it.
+        if not did_work:
+            # Nothing ran and nothing was said. There is no outcome to report,
+            # so this is a failure rather than an invented abstention.
+            yield numbered(
+                Error(message="No grounded answer was produced within the step budget.")
+            )
+            yield numbered(Done(run_id=run_id, status="failed"))
+            return
+        # A long search hit the step limit before writing its summary. The
+        # experiments themselves are recorded and the user can see them, so
+        # losing the closing paragraph is not a failed run — say what happened
+        # and let them ask for more.
         yield numbered(
-            Error(message="No grounded answer was produced within the step budget.")
+            Answer(
+                answer=AgentAnswer(
+                    answer=(
+                        "I reached the step limit for this session before writing up "
+                        "the results. The experiments I ran are recorded and visible "
+                        "in the experiment panel. Ask me to continue and I will pick "
+                        "up from the best version so far."
+                    ),
+                    confidence=0.3,
+                    abstained=True,
+                    reason="step budget exhausted mid-search",
+                )
+            )
         )
-        yield numbered(Done(run_id=run_id, status="failed"))
+        yield numbered(Done(run_id=run_id, status="succeeded"))
         return
 
     yield numbered(Answer(answer=answer))

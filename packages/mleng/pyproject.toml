@@ -14,7 +14,11 @@ dependencies = [
     "pyarrow>=16.0",
     "pydantic>=2.7.0",
     "python-dotenv>=1.0.0",
+    "numpy>=1.26",
     "scikit-learn>=1.5",
+    "xgboost>=2.0",
+    "lightgbm>=4.0",
+    "optuna>=3.6",
 ]
 
 [project.scripts]

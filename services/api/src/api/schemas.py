@@ -66,6 +66,69 @@ class ThreadFileResponse(BaseModel):
     modified_at: datetime
 
 
+class ExperimentRunResponse(BaseModel):
+    """One MLflow training run on this conversation, for the sidebar and API.
+
+    A run executes a recipe version; several runs can share one. The version
+    fields are what let the UI group them instead of showing a flat list.
+    """
+
+    run_id: str
+    name: str
+    status: str
+    started_at: datetime | None = None
+    model: str | None = None
+    task: str | None = None
+    hypothesis: str | None = None
+    primary_metric: str | None = None
+    primary_value: float | None = None
+    metrics: dict[str, float]
+    recipe_version: int | None = None
+    recipe_parent: int | None = None
+    recipe_kind: str | None = None
+    reused: bool = False
+    split_seed: str | None = None
+    error: str | None = None
+
+
+class ProgressStepResponse(BaseModel):
+    """One run in the order it happened, with the best score at that point."""
+
+    order: int
+    version: int | None = None
+    run_id: str
+    at: datetime | None = None
+    value: float | None = None
+    best_so_far: float | None = None
+    improved: bool = False
+    gain: float | None = None
+    note: str | None = None
+    failed: bool = False
+    error: str | None = None
+
+
+class ProgressResponse(BaseModel):
+    """How performance moved across a whole search.
+
+    ``noise`` is how far apart two runs of the same version landed. A
+    ``total_gain`` smaller than that is not an improvement, which is why
+    ``improved`` is computed here rather than left to the reader.
+    """
+
+    metric: str | None = None
+    steps: list[ProgressStepResponse]
+    first: float | None = None
+    best: float | None = None
+    best_version: int | None = None
+    total_gain: float | None = None
+    versions: int
+    runs: int
+    failed: int
+    noise: float | None = None
+    seconds: float
+    improved: bool
+
+
 class MessageResponse(BaseModel):
     """One persisted turn. ``payload`` carries structured extras when present."""
 
